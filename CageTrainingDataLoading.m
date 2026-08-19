@@ -16,17 +16,16 @@ data_date = '2025-11-05'; % in yyyy-mm-dd
 task_type = 'cage_training/timedelay';
 %}
 %from dropbox to local
-monkey = 'Monkey Porthos';
-main_path = '/Users/xuefeiyu/Documents/XuefeiFile/WorkRelated/Data/';
-data_date = '2026-06-05'; % in yyyy-mm-dd
+monkey = 'Monkey Betty';
+main_path = '/Volumes/server';
+data_date = '2026-03-02'; % in yyyy-mm-dd
 task_type = 'cage_training/timedelay';
-local_label = 'raw';
 
-folder_path = fullfile(main_path, monkey, task_type,local_label,data_date);
+folder_path = fullfile(main_path, monkey,data_date, task_type);
 
 
 %Data output path
-main_output_path = '/Users/xuefeiyu/Documents/XuefeiFile/WorkRelated/Data';
+main_output_path = '/Users/evemendelevich/Documents/GitHub/mendelevich/data-analysis/examples/output_comparison/ct_data_map';
 monkey_specific_path = fullfile(monkey,task_type);
 output_path = fullfile(main_output_path,monkey_specific_path);
 % Create output directory if it doesn't exist
@@ -116,11 +115,11 @@ end
 
 
 function y = fillEmptyWithNaN(x)
-    if isempty(x)
-        y = NaN;
-    else
-        y = x;
-    end
+if isempty(x)
+    y = NaN;
+else
+    y = x;
+end
 
 end
 
@@ -130,24 +129,24 @@ function combined = appendTrialRow(existing, T)
 % <missing> (which becomes NaN in a numeric column, <missing> in a text one),
 % so trials or files that carry different fields still stack instead of
 % throwing a "variable names must match" error.
-    if isempty(existing)
-        combined = T;
-        return;
-    end
+if isempty(existing)
+    combined = T;
+    return;
+end
 
-    % columns T has but existing doesn't -> add them to existing (filled)
-    newCols = setdiff(T.Properties.VariableNames, existing.Properties.VariableNames, 'stable');
-    for c = 1:numel(newCols)
-        existing.(newCols{c}) = repmat(missing, height(existing), 1);
-    end
+% columns T has but existing doesn't -> add them to existing (filled)
+newCols = setdiff(T.Properties.VariableNames, existing.Properties.VariableNames, 'stable');
+for c = 1:numel(newCols)
+    existing.(newCols{c}) = repmat(missing, height(existing), 1);
+end
 
-    % columns existing has but T doesn't -> add them to T (filled)
-    absentCols = setdiff(existing.Properties.VariableNames, T.Properties.VariableNames, 'stable');
-    for c = 1:numel(absentCols)
-        T.(absentCols{c}) = missing;
-    end
+% columns existing has but T doesn't -> add them to T (filled)
+absentCols = setdiff(existing.Properties.VariableNames, T.Properties.VariableNames, 'stable');
+for c = 1:numel(absentCols)
+    T.(absentCols{c}) = missing;
+end
 
-    % put T's columns in the same order as existing, then stack
-    T = T(:, existing.Properties.VariableNames);
-    combined = [existing; T];
+% put T's columns in the same order as existing, then stack
+T = T(:, existing.Properties.VariableNames);
+combined = [existing; T];
 end
