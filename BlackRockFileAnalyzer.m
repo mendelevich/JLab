@@ -35,12 +35,12 @@ end
 
 Basic_Path  = '/Users/xuefeiyu/Documents/XuefeiFile/WorkRelated/Data';
 %Monkey = 'test';        % bare monkey name; folder is "Monkey <name>"
-Monkey = 'Athos'; 
+Monkey = 'Porthos'; 
 Location = 'in_lab';       % editable constant
 DataType = 'export_data';     % editable constant
 
 %Folder = '2026-07-17';
-Folder = '2026-07-24';
+Folder = '2026-09-02';
 
 
 %% -------------------------------------------------------------------------
@@ -113,7 +113,7 @@ cfg.RT = struct( ...            % reads no export -- consumes the calibrated eye
     'Plot',          true, ...  % saccade detection + saccade-map figures
     'PlotN',         50, ...
     'ErrorCheck',    true, ...
-    'ReCompute',     false, ...
+    'ReCompute',     true, ...
     'EndpointStyle', 'kde', ...
     'PeakVelStyle',  'surface');
 
@@ -174,7 +174,15 @@ waveform_path = findExportFile(all_files, main_path, 'spikes_waveform');
 if isempty(comments_path)
     error('No parsed trials data found. Please parse the data using the loader first.');
 end
-comments_data = readtable(comments_path);
+% detectImportOptions rather than a bare readtable(path): bare readtable infers
+% each column's type from the head of the file only, and the trials CSV starts
+% with a whole visual-saccade block in which Target_2_color, Target_1_side and
+% any other target-2 text column are empty. It therefore typed those columns
+% double and silently dropped every text value further down -- 4326 of 5879 rows
+% for both of those on 2026-09-02. Same fix, and the same reason, as readStable
+% in ExportTaskAnalysisSummary/ExportQCSummary.
+comments_opts = detectImportOptions(comments_path, 'Delimiter', ',');
+comments_data = readtable(comments_path, comments_opts);
 
 % Each stage below announces itself: the banner (position in the cascade) comes
 % from here, the indented status line under it from the block itself, since only

@@ -183,8 +183,11 @@ This applies to standalone calls only. `loadSession` always passes
 
 ### Checking the comments to debug parsing
 
-When the task's comment-string format changes, parsed events can silently land
-in `trials.undefined` instead of the expected fields. Load just the comments
+When the task's comment-string format changes, parsed events can land in
+`trials.undefined` instead of the expected fields. `parseEvents` now always
+prints a report naming them, so watch for a non-zero `undefined` count and the
+`undefined events:` list it prints under it. To see the raw strings, load just
+the comments
 (way 3 above) and pair each raw, **unparsed** comment with its timestamp using
 the static helper `BlackrockLoader.commentsWithTime`, so you can eyeball exactly
 what the recording contains:
@@ -324,6 +327,19 @@ one row per trial. Key column conventions:
 - The `undefined` and `duplicates` bookkeeping fields are dropped before export.
 - Derived features from parsing are included (polar target angle/eccentricity,
   `Stimulus_direction`, `Choose_target`, `Choose_leftright`).
+- `Target_*_angle` / `Target_*_eccentricity` are taken from the task's
+  `Target N position polar (theta ..., rho ...) deg` comment when it sends one,
+  and back-computed from the cartesian position otherwise. Both paths store the
+  **task's own convention**: `0` = +x (right), counter-clockwise, `[0, 360)`.
+  Preferring the sent values matters because the cartesian comments are printed
+  to two decimals, so a back-computed rho is wrong in the fourth digit
+  (`(4.95, 4.95)` gives 6.99985 where the task sent exactly 7.00).
+  > ⚠️ This replaced an earlier compass frame (`0` = up, clockwise,
+  > `(-180, 180]`). Angles are plain numbers, so an old export and a new one
+  > cannot be told apart by inspection — **re-export every session** you intend
+  > to compare, and re-run the analyzer with the `ReCompute*` flags on so cached
+  > products are rebuilt. Use `BlackrockLoader.hemifield(angle)` for left/right;
+  > the old `angle >= 0` test is true for every angle in this range.
 
 **`*_eye_matlab.mat`** — one variable `eye`, a struct that lines up 1:1
 with the CSV rows (trial dimension is index-aligned with `trials`):
@@ -421,7 +437,9 @@ every trial of that block — and `Session` is a join key downstream
 Trial_number)`). A session with no metadata block gets a blank `experiment`
 entry so `experiment(Session)` is always addressable. Derived features (polar
 target angle/eccentricity, `Stimulus_direction`, `Choose_target`,
-`Choose_leftright`) are added at the end.
+`Choose_leftright`) are added at the end; the polar pair prefers the task's own
+`position polar` comment over the cartesian back-computation, and is stored in
+the task's `[0, 360)` convention (see the CSV notes above).
 
 Parsing is set-oriented rather than per-comment: the whole comment matrix is
 tokenised at once, trial and session indices come from `cumsum`, and each
@@ -450,11 +468,12 @@ mechanism, so pick by how the comment reads:
 | map | comment text | what is stored |
 | --- | --- | --- |
 | `TimeEvents` | `Widget engaged` (bare name) | the comment's timestamp |
-| `SegmentEvents` | `Widget color blue` | the text after the **last** space |
+| `SegmentEvents` | `Widget color blue` | the text after the **key**, verbatim |
 | `InformationEvents` | `Widget position (1.5, -2.5) deg` | a `[x y]` pair |
 | `InformationEvents` | `Reward start (250.0ms)` | the timestamp **and** `Reward_amount` |
 | `InformationEvents` | `Requested widget delay 250 ms` | a scalar (`None`/`none` → `NaN`) |
 | `InformationEvents` | `Widget size 4.00 deg` | a scalar |
+| `PolarEvents` | `Widget position polar (theta 45.00, rho 7.00) deg` | theta into the **first** mapped field, rho into the **second** |
 
 Everything downstream is derived from those two edits, so do not declare it
 anywhere: whether the exported column is text or numeric, the `_x`/`_y` split of
@@ -466,6 +485,19 @@ Two things to watch:
 - **Keys may not be substrings of one another within the same map.** Lookup is
   exact-match, so adding `'Fixation point'` next to `'Fixation point on'` throws
   `BlackrockLoader:EventMaps:SubstringKey` when the loader is constructed.
+- **Every mapped field must exist in the template**, or construction throws
+  `BlackrockLoader:EventMaps:UnknownField`. This is the one mistake the parse
+  report cannot show you: a field nobody declared resolves to index 0, the write
+  is dropped, and the comment lands in neither the trial nor `trials.undefined`.
+  So forgetting edit 2 above is an error at construction, not silent data loss.
+- **A `PolarEvents` value is a *pair* of field names, not one.** One such
+  comment carries two numbers, so the value is
+  `{'Target_1_angle', 'Target_1_eccentricity'}` — theta to the first, rho to the
+  second. It is a separate map from `InformationEvents` because
+  `'Target 1 position'` is a substring of `'Target 1 position polar'`, which the
+  substring rule below forbids inside one map. Its theta is stored in the math
+  convention the task sends (0 = +x, counter-clockwise) and rotated into the
+  stored compass frame by `addDerivedTrialFeatures`.
 - **`DashEvents` and `OutcomeEvents` are plain lists, not field maps.** Their
   target fields are hardcoded (`End`/`Trialoutcome` when the name contains
   `End`, `Choosen_choice` when it contains `choice`, `Choiceoutcome` for
@@ -476,9 +508,9 @@ If the comment matches **none** of the shapes in the table, there is a third
 place: add a `kind` test and its extraction branch to
 `BlackrockLoader.classifyEventBodies` (and a new `mode` if the value is not a
 timestamp, scalar, pair, or text). That function is the only place event bodies
-are pattern-matched. (While the temporary `parseEventsLegacy` is still in the
-class, a new shape added only to the fast path will make `Test_parseEvents_AB.m`
-report a difference — expected, since that method is being removed.)
+are pattern-matched. (`parseEventsLegacy` is now block-commented out in the class, and
+stale — see the note above it. `Test_parseEvents_AB.m` cannot run until it is
+restored, and would report differences for every shape added since 2026-08-06.)
 
 Session-level rather than per-trial metadata follows the same pattern one level
 up, via `ExpEvents` in `defaultEventMaps()` plus `defaultExpTemplate()`.

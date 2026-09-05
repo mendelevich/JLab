@@ -52,7 +52,7 @@ end
 % Per-run inputs: set the basic path once, supply the monkey name, and choose
 % which year-month-date folder(s) to process. The loader auto-detects .nev/.ns2.
 Basic_Path  = '/Users/xuefeiyu/Documents/XuefeiFile/WorkRelated/Data';
-Monkey = 'Athos';        % bare monkey name; folder is "Monkey <name>"
+Monkey = 'Porthos';        % bare monkey name; folder is "Monkey <name>"
 Location = 'in_lab';       % editable constant
 DataType = 'raw_data';     % editable constant
 OutputFolder = 'export_data';   % where parsed data is written
@@ -72,7 +72,7 @@ ExportPath = fullfile(Basic_Path,MonkeyFolder,Location,OutputFolder);
 %   {'2026-06-17','2026-06-18'}    several folders, loaded in order
 %   {}  (or '')                    every YYYY-MM-DD folder under DataTypePath
 %Folder = {'2026-07-15'};
-Folder = {'2026-07-24'};
+Folder = {'2026-09-02'};
 FolderList = BlackrockLoader.resolveFolders(Folder, DataTypePath);
 
 %% Load configuration (passed to the loader; exports reuse the buffers)
@@ -109,9 +109,6 @@ LoadPhotodiodeData        = true;   % default off
 %PhotodiodeIdentifier      = '*.ns4';   % fallback/forced separate-file extension
 
 % Runtime behaviour (all optional; defaults shown)
-%Verbose           = false;  % print per-event parsing chatter from parseEvents.
-                             % Off by default -- unmatched events are reported as
-                             % a single summary warning instead.
 %FreeRawAfterParse = true;   % release each raw continuous stream as soon as its
                              % per-trial product exists. Set false to keep
                              % loader.Loaded fully inspectable for debugging.
@@ -145,7 +142,6 @@ loader = BlackrockLoader( ...
     %'EyeIdentifier',    EyeIdentifier);
     %'LFPPrefix',           LFPPrefix, ...
     %'LFPIdentifier',       LFPIdentifier, ...
-    %'Verbose',                   Verbose, ...
     %'FreeRawAfterParse',         FreeRawAfterParse, ...
     %'CompressExport',            CompressExport, ...
     %'EyeChannels',               EyeChannels, ...
@@ -178,7 +174,7 @@ for fi = 1:numel(FolderList)
     rawComments = BlackrockLoader.commentsWithTime(loader.Loaded.Events, loader.Loaded.EventTime);
 
     disp(rawComments);              % print to the command window, or
-    %openvar('rawComments');        % open in the Variables editor to scroll/filter
+    openvar('rawComments');        % open in the Variables editor to scroll/filter
     keyboard
     %}
 

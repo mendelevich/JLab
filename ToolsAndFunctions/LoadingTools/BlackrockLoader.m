@@ -86,11 +86,6 @@ classdef BlackrockLoader < handle
                                          % Source-agnostic: applies to online or offline spikes
 
         % --- runtime behaviour ---
-        Verbose            = false   % print the per-event parsing chatter from parseEvents.
-                                     % Off by default: command-window output is slow, and an
-                                     % unrecognised comment format would otherwise emit several
-                                     % lines per event across ~1e5 events. Problems still
-                                     % surface as warnings when this is off.
         FreeRawAfterParse  = true    % release each raw continuous stream as soon as its
                                      % per-trial product exists, instead of holding raw +
                                      % segmented copies of every stream until the next load().
@@ -152,7 +147,7 @@ classdef BlackrockLoader < handle
             if isempty(obj.TrialTemplate); obj.TrialTemplate = BlackrockLoader.defaultTrialTemplate(); end
             if isempty(obj.ExpTemplate);   obj.ExpTemplate   = BlackrockLoader.defaultExpTemplate();   end
             if isempty(obj.EventMaps);     obj.EventMaps     = BlackrockLoader.defaultEventMaps();      end
-            BlackrockLoader.validateEventMaps(obj.EventMaps);
+            BlackrockLoader.validateEventMaps(obj.EventMaps, obj.TrialTemplate, obj.ExpTemplate);
         end
 
 
@@ -662,6 +657,8 @@ classdef BlackrockLoader < handle
             [trials, experiment, startTicks, endTicks] = ...
                 obj.parseEventsFast(Events, EventTime, EventTick);
     
+            % The legacy parser is itself commented out below, and is stale --
+            % see the note above it before uncommenting either block.
             %{
           disp('Use legacy parser');
              [trials, experiment, startTicks, endTicks] = ...
@@ -695,34 +692,33 @@ classdef BlackrockLoader < handle
             [ub, ~, ic] = unique(K.body(K.isTrialLine));
             spec = BlackrockLoader.classifyEventBodies(ub, obj.EventMaps, obj.TrialTemplate);
 
-            [cols, dupCells, undCells, startTicks, endTicks, nUndef] = BlackrockLoader.scatterEventWrites( ...
+            [cols, dupCells, undCells, startTicks, endTicks] = BlackrockLoader.scatterEventWrites( ...
                 spec, ic, K, Session, EventTime, EventTick, has_ticks, obj.TrialTemplate);
 
             trials     = BlackrockLoader.assembleTrialStruct(cols, dupCells, undCells, obj.TrialTemplate);
             experiment = BlackrockLoader.buildExperimentMeta(K, EventTime, obj.ExpTemplate, ...
                                                              obj.EventMaps.ExpEvents, Session);
 
-            if obj.Verbose
-                % The per-comment parser printed as it walked, which cannot be
-                % reproduced in comment order without the loop it replaced. A
-                % summary carries the same information and costs nothing.
-                dupAll = vertcat(dupCells{:});
-                undAll = vertcat(undCells{:});
-                fprintf('parseEvents: %d comments -> %d trials, %d session(s); %d distinct event bodies\n', ...
-                    numel(K.txt), K.nTrials, max([Session; 0]), numel(ub));
-                fprintf('  undefined %d, duplicates %d, malformed %d\n', ...
-                    numel(undAll), numel(dupAll), sum(K.isMalformed));
-                if ~isempty(undAll)
-                    fprintf('  undefined events:\n');
-                    fprintf('    %s\n', unique(undAll));
-                end
-                if ~isempty(dupAll)
-                    fprintf('  duplicated events:\n');
-                    fprintf('    %s\n', unique(dupAll));
-                end
-            elseif nUndef > 0
-                warning(['parseEvents: %d comment(s) matched no known event and went to ' ...
-                    'trials.undefined. Set the loader''s Verbose flag to list them.'], nUndef);
+            % Always printed, and deliberately not behind a flag. The undefined
+            % list is the only place a comment shape the parser does not know
+            % ever surfaces -- that is how the bracketed-RGB colour bodies went
+            % unnoticed for a whole session -- and this is one bounded block per
+            % date folder, not per event. (The per-comment parser printed as it
+            % walked, which cannot be reproduced in comment order without the
+            % loop it replaced; the summary carries the same information.)
+            dupAll = vertcat(dupCells{:});
+            undAll = vertcat(undCells{:});
+            fprintf('parseEvents: %d comments -> %d trials, %d session(s); %d distinct event bodies\n', ...
+                numel(K.txt), K.nTrials, max([Session; 0]), numel(ub));
+            fprintf('  undefined %d, duplicates %d, malformed %d\n', ...
+                numel(undAll), numel(dupAll), sum(K.isMalformed));
+            if ~isempty(undAll)
+                fprintf('  undefined events (add a key for these, or they stay dropped):\n');
+                fprintf('    %s\n', unique(undAll));
+            end
+            if ~isempty(dupAll)
+                fprintf('  duplicated events (first write kept):\n');
+                fprintf('    %s\n', unique(dupAll));
             end
             if any(K.isMalformed)
                 % Neither an Experiment line nor a "Trial N:" line, so there is
@@ -736,6 +732,24 @@ classdef BlackrockLoader < handle
             trials = BlackrockLoader.addDerivedTrialFeatures(trials);
         end
 
+        % ---------------------------------------------------------------------
+        % parseEventsLegacy -- COMMENTED OUT 2026-09-04.
+        %
+        % Reference per-comment implementation, kept only to A/B against the
+        % vectorised parser (Test_parseEvents_AB.m, gitignored/local-only).
+        %
+        % LAST UPDATED 2026-08-06, commit e3cedd5 "Compute trial windows in exact
+        % integer ticks". It therefore implements NOTHING added after that date:
+        %   - SegmentEvents splitting at the key instead of the last space, so it
+        %     still drops every 'Target N color [-0.8, -0.8, -0.8]' body
+        %   - PolarEvents / 'Target N position polar (theta ..., rho ...) deg'
+        %   - the 'Target 1 dimmed' time event
+        %   - it still reads an obj.Verbose property, which no longer exists
+        %
+        % An A/B run will report differences for all of the above. Bring it back
+        % to parity with parseEventsFast before trusting any comparison from it.
+        % ---------------------------------------------------------------------
+%{
         function [trials, experiment, startTicks, endTicks] = parseEventsLegacy(obj, Events, EventTime, EventTick)
         % TEMPORARY reference implementation, kept only to A/B against the
         % vectorised parser. Comment-major: one loop iteration per comment
@@ -1158,6 +1172,7 @@ classdef BlackrockLoader < handle
 
             trials = BlackrockLoader.addDerivedTrialFeatures(trials);
         end
+%}
 
         function A = parseEye(obj)
         % Segment the loaded eye stream into per-trial slices, stored in
@@ -1409,7 +1424,12 @@ classdef BlackrockLoader < handle
 
             % Trials (.csv)
             fname_trials = [BaseName '_trials_matlab.csv'];
-            writetable(obj.Export.trials_table, fullfile(OutputPath, fname_trials));
+            % QuoteStrings 'minimal' quotes only fields that contain the
+            % delimiter, which Target_*_color now does ('[-0.8, -0.8, -0.8]').
+            % It is already the default on current MATLAB, so this changes no
+            % existing column -- it just stops the export relying on that default.
+            writetable(obj.Export.trials_table, fullfile(OutputPath, fname_trials), ...
+                'QuoteStrings', 'minimal');
             fprintf('File:%s Trials Data has been parsed into %s\n', src, fname_trials);
 
             % Eye (.mat) - only when segmented
@@ -2382,14 +2402,14 @@ classdef BlackrockLoader < handle
             end
         end
 
-        function validateEventMaps(maps)
+        function validateEventMaps(maps, trialTemplate, expTemplate)
         % Assert the invariant that lets exact-match lookup stand in for the
         % per-comment parser's substring reverse lookup, contains(keys, name).
         % The two agree only while no key in a map is a proper substring of
         % another key in the SAME map. Adding e.g. 'Fixation point' alongside
         % 'Fixation point on' would silently bind events to the wrong field, so
         % fail here instead.
-            names = {'TimeEvents', 'InformationEvents', 'SegmentEvents'};
+            names = {'TimeEvents', 'InformationEvents', 'SegmentEvents', 'PolarEvents'};
             for n = 1:numel(names)
                 kk = string(keys(maps.(names{n})));
                 for a = 1:numel(kk)
@@ -2401,6 +2421,48 @@ classdef BlackrockLoader < handle
                              'exact-match and cannot disambiguate these.'], ...
                             names{n}, kk(a), kk(find(inside, 1)));
                     end
+                end
+            end
+
+            % Every mapped field name must exist in the template it writes to.
+            % Without this, a map value naming a field nobody declared resolves to
+            % field index 0, scatterEventWrites drops it (keep = flatFld > 0), and
+            % the comment vanishes completely -- not into the trial, not into
+            % trials.undefined, not into the parse report. That is the one failure
+            % mode the report cannot show you, so it is caught at construction.
+            % Called with maps only (or with [] templates), the check still runs,
+            % against the default schema -- that is the right default for a bare
+            % validateEventMaps(maps), and it keeps the list below fixed-size.
+            if nargin < 2 || isempty(trialTemplate)
+                trialTemplate = BlackrockLoader.defaultTrialTemplate();
+            end
+            if nargin < 3 || isempty(expTemplate)
+                expTemplate = BlackrockLoader.defaultExpTemplate();
+            end
+            checks = {'TimeEvents',        trialTemplate; ...
+                      'InformationEvents', trialTemplate; ...
+                      'SegmentEvents',     trialTemplate; ...
+                      'PolarEvents',       trialTemplate; ...
+                      'ExpEvents',         expTemplate};
+            for n = 1:size(checks, 1)
+                nm = checks{n, 1};
+                fn = fieldnames(checks{n, 2});
+                vv = values(maps.(nm));
+                % PolarEvents values are {theta_field, rho_field} pairs; every
+                % other map's are single char field names. Split on which is
+                % which -- concatenating both kinds at once would glue the char
+                % values into one long string instead of listing them.
+                isPair  = cellfun(@iscell, vv);
+                singles = string(vv(~isPair));      % cellstr  -> string array
+                paired  = string([vv{isPair}]);     % none     -> 0x0 string
+                flat    = [singles(:)', paired(:)'];
+                miss    = flat(~ismember(flat, fn));
+                if ~isempty(miss)
+                    error('BlackrockLoader:EventMaps:UnknownField', ...
+                        ['%s maps to field(s) that do not exist in the template: %s. ' ...
+                         'Add them in defaultTrialTemplate/defaultExpTemplate, or the ' ...
+                         'matching comments would be parsed and then silently dropped.'], ...
+                        nm, strjoin(miss, ', '));
                 end
             end
         end
@@ -2443,6 +2505,12 @@ classdef BlackrockLoader < handle
             timeKeys = string(keys(maps.TimeEvents));   timeVals = string(values(maps.TimeEvents));
             infoKeys = string(keys(maps.InformationEvents)); infoVals = string(values(maps.InformationEvents));
             segKeys  = string(keys(maps.SegmentEvents)); segVals  = string(values(maps.SegmentEvents));
+            polarKeys = string(keys(maps.PolarEvents));
+            % Values are {theta_field, rho_field} pairs; split them into two
+            % parallel string lists so the branch below stays index-vectorised.
+            polarPairs = values(maps.PolarEvents);
+            polarAng   = string(cellfun(@(v) v{1}, polarPairs, 'UniformOutput', false));
+            polarEcc   = string(cellfun(@(v) v{2}, polarPairs, 'UniformOutput', false));
 
             % Same tests as the per-comment chain, assigned in reverse priority
             % so the highest-priority branch (time) overwrites the rest.
@@ -2453,6 +2521,11 @@ classdef BlackrockLoader < handle
             kind(contains(ub, segKeys))                                     = 3;
             kind(contains(ub, infoKeys))                                    = 2;
             kind(contains(ub, timeKeys))                                    = 1;
+            % Last, i.e. highest priority: 'Target 1 position polar' CONTAINS the
+            % information key 'Target 1 position', so kind 2 claims it first and
+            % has to be overridden. The plain '... position (x, y) deg' body does
+            % not contain the polar key, so it is unaffected.
+            kind(contains(ub, polarKeys))                                   = 7;
 
             % Patterns copied verbatim from the per-comment parser. The time and
             % size patterns are applied in sequence rather than as one
@@ -2464,6 +2537,7 @@ classdef BlackrockLoader < handle
             reward_pattern = '^(.*?)\s*\(([\d\.]+)ms';
             time_pattern   = '^(.*?)\s+([-+]?\d*\.?\d+|None|none)\s*ms$';
             size_pattern   = '^(.*?)\s+([-+]?\d*\.?\d+)\s*(?:deg)?$';
+            polar_pattern  = '^(.*?)\s*\(\s*theta\s*([-+]?\d*\.?\d+)\s*,\s*rho\s*([-+]?\d*\.?\d+)\s*\)\s*deg$';
 
             % ---- kind 1: time events -> the comment's own timestamp ----------
             sel = find(kind == 1);
@@ -2530,19 +2604,37 @@ classdef BlackrockLoader < handle
                 spec.isUndef(r(~ok))  = true;
             end
 
-            % ---- kind 3: segment events, split at the LAST space -------------
+            % ---- kind 3: segment events, split at the KEY --------------------
+            % The value is everything after the key, verbatim. This used to be a
+            % split at the LAST space, which silently dropped every value that
+            % contained one: 'Target 1 color [-0.8, -0.8, -0.8]' split into the
+            % key 'Target 1 color [-0.8, -0.8,' , which resolves to no field, so
+            % 17304 bodies per session went to trials.undefined while the
+            % 'Target 1 color white' form parsed fine. Splitting at the key is
+            % output-identical for every named-colour / task / trial-type /
+            % side value and additionally handles the bracketed RGB form.
+            %
+            % Loops over the KEYS (six of them), not the bodies, so the
+            % set-oriented shape of this function is unchanged. At most one key
+            % can match a body: validateEventMaps guarantees no key in a map is
+            % a substring of another, so match order is irrelevant.
             sel = find(kind == 3);
             if ~isempty(sel)
-                gTok = BlackrockLoader.regexpTokensOnce(ub(sel), '^(.*) ([^ ]*)$');   % greedy = last space
-                got  = ~cellfun(@isempty, gTok);
-                r = sel(got);  V = vertcat(gTok{got});
-                [f, ok] = BlackrockLoader.lookupEventField(strtrim(V(:,1)), segKeys, segVals, fn);
-                spec.field(r(ok), 1)  = f(ok);
-                spec.mode(r(ok), 1)   = 4;
-                spec.txt(r(ok), 1)    = strtrim(V(ok, 2));
-                spec.dupLab(r(ok), 1) = segVals(BlackrockLoader.matchIndex(strtrim(V(ok,1)), segKeys));
-                spec.isUndef(r(~ok))  = true;
-                spec.isUndef(sel(~got)) = true;
+                b       = ub(sel);
+                claimed = false(numel(sel), 1);
+                for k = 1:numel(segKeys)
+                    m = ~claimed & contains(b, segKeys(k));   % same test as kind == 3
+                    if ~any(m); continue; end
+                    r   = sel(m);
+                    val = strtrim(extractAfter(b(m), segKeys(k)));
+                    spec.field(r, 1)  = BlackrockLoader.fieldIndex(segVals(k), fn);
+                    spec.mode(r, 1)   = 4;
+                    spec.txt(r, 1)    = val;
+                    spec.dupLab(r, 1) = segVals(k);
+                    spec.isUndef(r(val == "")) = true;   % bare key carrying no value
+                    claimed(m) = true;
+                end
+                spec.isUndef(sel(~claimed)) = true;
             end
 
             % ---- kind 4: dash events, split at the FIRST dash ----------------
@@ -2614,11 +2706,46 @@ classdef BlackrockLoader < handle
                 end
             end
 
+            % ---- kind 7: polar coordinate pair -------------------------------
+            % '<name> (theta <t>, rho <r>) deg' -> two scalar fields built from the
+            % map's field-name PREFIX: <prefix>_angle and <prefix>_eccentricity.
+            % theta is stored exactly as it arrives (0 = +x, counter-clockwise),
+            % which is also the frame the field keeps; addDerivedTrialFeatures
+            % only wraps it to [0, 360) and fills the trials that sent no polar
+            % comment from the cartesian position instead.
+            sel = find(kind == 7);
+            if ~isempty(sel)
+                pTok = BlackrockLoader.regexpTokensOnce(ub(sel), polar_pattern);
+                got  = ~cellfun(@isempty, pTok);
+                if any(got)
+                    r = sel(got);  V = vertcat(pTok{got});
+                    % Exact match only. The substring fallback in matchIndex is
+                    % meaningless against a map keyed on prefixes, and every polar
+                    % body names its key in full anyway.
+                    [ok, loc] = ismember(strtrim(V(:,1)), polarKeys);
+                    aName = strings(numel(r), 1);  aName(ok) = polarAng(loc(ok));
+                    eName = strings(numel(r), 1);  eName(ok) = polarEcc(loc(ok));
+
+                    spec.field(r(ok), 1)  = BlackrockLoader.fieldIndex(aName(ok), fn);
+                    spec.mode(r(ok), 1)   = 2;
+                    spec.num(r(ok), 1)    = str2double(V(ok, 2));
+                    spec.dupLab(r(ok), 1) = aName(ok);
+
+                    spec.field(r(ok), 2)  = BlackrockLoader.fieldIndex(eName(ok), fn);
+                    spec.mode(r(ok), 2)   = 2;
+                    spec.num(r(ok), 2)    = str2double(V(ok, 3));
+                    spec.dupLab(r(ok), 2) = eName(ok);
+
+                    spec.isUndef(r(~ok)) = true;
+                end
+                spec.isUndef(sel(~got)) = true;
+            end
+
             % ---- kind 0: claimed by nothing ---------------------------------
             spec.isUndef(kind == 0) = true;
         end
 
-        function [cols, dupCells, undCells, startTicks, endTicks, nUndef] = scatterEventWrites( ...
+        function [cols, dupCells, undCells, startTicks, endTicks] = scatterEventWrites( ...
                 spec, ic, K, Session, EventTime, EventTick, has_ticks, trialTemplate)
         % Fill one column per trial field, one pass per FIELD rather than one
         % per comment.
@@ -2665,7 +2792,6 @@ classdef BlackrockLoader < handle
             undCells   = repmat({strings(0,1)}, nTrials, 1);
 
             if nTrials == 0
-                nUndef = 0;
                 return
             end
 
@@ -2741,7 +2867,6 @@ classdef BlackrockLoader < handle
 
             % Bodies that matched no branch, attributed to the trial they fell in.
             undMask = spec.isUndef(ic(:));
-            nUndef  = sum(undMask);
             undCells = BlackrockLoader.groupLabelsByTrial(rowOfTC(undMask), find(undMask), ...
                                                           K.body(cmtIdx(undMask)), nTrials);
 
@@ -2995,26 +3120,27 @@ classdef BlackrockLoader < handle
             [trials.Task] = deal(tasks{:});
 
             %% Add a few feature for further analysis
-            %1. Transform Cartesian into Polar for target postion
-            % -180(left) to 180(right)
-            Target_1_xy = vertcat(trials.Target_1_position);
-            [theta, Target_1_ecc] = cart2pol(Target_1_xy(:,1),Target_1_xy(:,2));
-            Target_1_angle = mod(90 - rad2deg(theta), 360);
-            Target_1_angle(Target_1_angle >= 180) = Target_1_angle(Target_1_angle >= 180) - 360;
+            %1. Polar target position, in the task's convention: 0 = +x (right),
+            % counter-clockwise, [0, 360). Target_*_angle / Target_*_eccentricity
+            % already hold whatever a 'Target N position polar' comment sent (NaN
+            % where the task sent none); targetPolar keeps those and fills the
+            % rest from the cartesian position, so both paths share one frame.
+            [Target_1_angle, Target_1_ecc] = BlackrockLoader.targetPolar( ...
+                vertcat(trials.Target_1_position), ...
+                vertcat(trials.Target_1_angle), vertcat(trials.Target_1_eccentricity));
 
-            Target_2_xy = vertcat(trials.Target_2_position);
-            [theta, Target_2_ecc] = cart2pol(Target_2_xy(:,1),Target_2_xy(:,2));
-            Target_2_angle = mod(90 - rad2deg(theta), 360);
-            Target_2_angle(Target_2_angle >= 180) = Target_2_angle(Target_2_angle >= 180) - 360;
+            [Target_2_angle, Target_2_ecc] = BlackrockLoader.targetPolar( ...
+                vertcat(trials.Target_2_position), ...
+                vertcat(trials.Target_2_angle), vertcat(trials.Target_2_eccentricity));
 
-            stimulus_dir = (Target_1_angle >= 0) * 2 - 1;
+            stimulus_dir = BlackrockLoader.hemifield(Target_1_angle);
             stimulus_dir(isnan(Target_1_angle)) = NaN;
 
             %2. Transform choice into target1/target2 and left/right
             ChooseTarget = cellfun(@(s) str2double(s(end)), {trials.Choosen_choice});
             ChooseLeftRight = ChooseTarget;
-            ChooseLeftRight(ChooseTarget==1) = (Target_1_angle(ChooseTarget==1) >= 0) * 2 - 1;
-            ChooseLeftRight(ChooseTarget==2) = (Target_2_angle(ChooseTarget==2) >= 0) * 2 - 1;
+            ChooseLeftRight(ChooseTarget==1) = BlackrockLoader.hemifield(Target_1_angle(ChooseTarget==1));
+            ChooseLeftRight(ChooseTarget==2) = BlackrockLoader.hemifield(Target_2_angle(ChooseTarget==2));
 
             %3. Add these features back
             Target1Angle_cell = num2cell(Target_1_angle);
@@ -3038,8 +3164,54 @@ classdef BlackrockLoader < handle
             [trials.Target_2_eccentricity] = deal(Target_2_ecc_cell{:});
         end
 
+        function [angleDeg, ecc] = targetPolar(xy, sentTheta, sentRho)
+        % Polar angle and eccentricity for one target, preferring the values the
+        % task sent over ones back-computed from the printed cartesian position.
+        %
+        % Pure. xy is Nx2 cartesian position pairs; sentTheta/sentRho are the raw
+        % 'position polar' comment values, NaN wherever no such comment arrived.
+        %
+        % The result is in the TASK'S OWN convention, stored exactly as the
+        % comment carries it: 0 = +x (right), counter-clockwise, [0, 360). The
+        % cartesian branch is wrapped into the same range so both paths agree.
+        %
+        % This is deliberately NOT the old compass frame (0 = up, clockwise,
+        % (-180, 180]). Two consequences: left/right needs hemifield() rather
+        % than a sign test, and any trials CSV or AnalysisCache product written
+        % before this change holds compass angles, so re-export rather than mix.
+        %
+        % The sent values win because the cartesian comments are printed to two
+        % decimals, so rho back-computed from them is wrong in the fourth digit:
+        % '(4.95, 4.95)' gives 6.99985 where the task sent exactly 7.00.
+            have = ~isnan(sentTheta) & ~isnan(sentRho);
+
+            [th, ecc]      = cart2pol(xy(:,1), xy(:,2));
+            angleDeg       = rad2deg(th);      % atan2 range, (-180, 180]
+            angleDeg(have) = sentTheta(have);
+            ecc(have)      = sentRho(have);
+
+            angleDeg = mod(angleDeg, 360);     % [0, 360), as the task sends it
+        end
+
+        function d = hemifield(angleDeg)
+        % +1 = right hemifield, -1 = left, for an angle in the stored convention
+        % (0 = +x, counter-clockwise, [0, 360)).
+        %
+        % Right is [0, 90] u (270, 360). That selects exactly the trials the old
+        % compass-frame test '(angle >= 0)' selected, tie-breaks included: a
+        % target straight up (90) counts right, straight down (270) counts left.
+        % A sign test cannot do this any more -- every angle in [0, 360) is
+        % non-negative, so '>= 0' would call every target right.
+        %
+        % NaN falls through to -1, which is what '(NaN >= 0)*2 - 1' also returned:
+        % Stimulus_direction re-NaNs those itself and Choose_leftright never did,
+        % so that asymmetry is preserved here rather than quietly changed.
+            d = ((angleDeg <= 90) | (angleDeg > 270)) * 2 - 1;
+        end
+
         function exp_template = defaultExpTemplate()
         % Experimental meta data (one entry per session within the recording).
+        
             exp_template = struct();
             exp_template.git_commit                   = NaN;
             exp_template.viewing_distance             = NaN;          % in cm
@@ -3059,6 +3231,7 @@ classdef BlackrockLoader < handle
 
         function trial = defaultTrialTemplate()
         % Per-trial record; every field NaN-initialised so unseen events stay NaN.
+        % Last updates, Sep 4, by xuefei    
             trial = struct();
             trial.Trial_number = NaN; %Current trial number
             trial.Session = NaN; %which experiment session this trial belongs to
@@ -3068,7 +3241,7 @@ classdef BlackrockLoader < handle
             trial.Fixation_position = [NaN,NaN];%array:1-2: postion;%in deg
             trial.Fixation_size = NaN;% in deg
             trial.Fixation_acceptance_window=NaN; % in deg
-            trial.Fixation_color = NaN;%color
+            trial.Fixation_color = ""; % string (name or an RGB triplet as sent)
             trial.Requested_fixation_hold_time = NaN; % in ms
             trial.Requested_fixation_duration = NaN; %in ms
             trial.Requested_timeout = NaN; % in ms
@@ -3077,7 +3250,7 @@ classdef BlackrockLoader < handle
 
             trial.Target_1_size = NaN; % in deg
             trial.Target_1_acceptance_window = NaN; % in deg
-            trial.Target_1_color = NaN; % in deg
+            trial.Target_1_color = ""; % string (name or an RGB triplet as sent)
             trial.Requested_target_1_hold_time  = NaN; %in ms
             trial.Requested_target_1_timeout = NaN; %in ms
             trial.Requested_target_1_duration = NaN; %in ms
@@ -3085,7 +3258,7 @@ classdef BlackrockLoader < handle
             trial.Target_2_position = [NaN,NaN];
             trial.Target_2_size = NaN; % in deg
             trial.Target_2_acceptance_window = NaN; % in deg
-            trial.Target_2_color = NaN; % in deg
+            trial.Target_2_color = ""; % string (name or an RGB triplet as sent)
 
             trial.Requested_target_2_time_offset = NaN; %in ms
             trial.Requested_target_2_hold_time  = NaN; %in ms
@@ -3102,6 +3275,7 @@ classdef BlackrockLoader < handle
             trial.Target_2_presented =NaN; %in ms
             trial.Targets_off = NaN; %in ms
             trial.Target_1_off = NaN; %in ms
+            trial.Target_1_dimmed = NaN; %in s (event time)
 
             trial.Choiceoutcome = NaN;
             trial.Choosen_choice = NaN; %1 or 2
@@ -3126,6 +3300,17 @@ classdef BlackrockLoader < handle
             trial.Requested_time_offset_max      = NaN; %in ms
             trial.Requested_time_offset_active   = NaN; %string, space-separated active offsets (ms)
 
+            % Target polar position, in the task's own convention: 0 = +x
+            % (right), counter-clockwise, [0, 360). Written directly by a
+            % 'position polar' comment when the task sends one, otherwise
+            % back-computed from the cartesian position by
+            % addDerivedTrialFeatures. Use BlackrockLoader.hemifield for
+            % left/right -- a sign test does not work in this range.
+            trial.Target_1_angle        = NaN; % in deg
+            trial.Target_2_angle        = NaN; % in deg
+            trial.Target_1_eccentricity = NaN; % in deg
+            trial.Target_2_eccentricity = NaN; % in deg
+
             trial.undefined = strings(0,1);%Duplicates or undefind events
             trial.duplicates = strings(0,1);%Duplicates or undefind events
         end
@@ -3134,6 +3319,7 @@ classdef BlackrockLoader < handle
         % The comment-string -> struct-field maps. To capture a new event from
         % the task software, add a key here (and a matching field in the trial /
         % experiment template above).
+        % Last updates, Sep 4, by xuefei
 
             % For experimental meta file map
             maps.ExpEvents = containers.Map({'git commit','viewing distance','screen size','screen resolution','FPS','eyetracker sample rate','eyetracker tracking'},...
@@ -3142,14 +3328,32 @@ classdef BlackrockLoader < handle
             %For trial map
             maps.TimeEvents = containers.Map( {'Start', 'Fixation point on','Fixation point off','Reward end','Target 1 presented','Target 2 presented','Targets off',...
                 'Fixation acquired','Broke fixation','Target 1 acquired','Target 2 acquired','Target 1 off',...
-                'Feedback flash on','Feedback flash off','Fixation exited','Target deadline exceeded'}, ...
+                'Feedback flash on','Feedback flash off','Fixation exited','Target deadline exceeded',...
+                'Target 1 dimmed'}, ...
                 {'Start','Fixation_point_on','Fixation_point_off','Reward_end','Target_1_presented','Target_2_presented','Targets_off',...
                 'Fixation_acquired','Broke_fixation','Choicetime','Choicetime','Target_1_off',...
-                'Feedback_flash_on','Feedback_flash_off','Fixation_exited','Target_deadline_exceeded'} ...
+                'Feedback_flash_on','Feedback_flash_off','Fixation_exited','Target_deadline_exceeded',...
+                'Target_1_dimmed'} ...
             );
 
             maps.SegmentEvents = containers.Map( {'Experiment','Fixation color','Target 1 color','Target 2 color','Trial type','Target 1 on the'},...
                 {'Task','Fixation_color','Target_1_color','Target_2_color','Trial_type','Target_1_side'});
+
+            % Polar coordinate pairs: '<name> (theta <t>, rho <r>) deg'. Alone
+            % among the maps the value is a {theta_field, rho_field} PAIR, because
+            % one such comment carries two values. Both are named outright rather
+            % than derived from a prefix, so the value still names the fields it
+            % writes -- the same contract as every other map, and the reason
+            % validateEventMaps can check them against the template.
+            % theta lands in the *_angle field exactly as the task sends it
+            % (0 = +x, counter-clockwise, [0, 360)); addDerivedTrialFeatures only
+            % fills in the trials where no polar comment arrived.
+            % Kept out of InformationEvents because 'Target 1 position' is a
+            % substring of 'Target 1 position polar', which validateEventMaps
+            % forbids within a single map.
+            maps.PolarEvents = containers.Map( {'Target 1 position polar','Target 2 position polar'},...
+                {{'Target_1_angle','Target_1_eccentricity'}, ...
+                 {'Target_2_angle','Target_2_eccentricity'}});
 
             maps.InformationEvents = containers.Map( ...
                 {'Fixation position','Fixation size','Fixation acceptance window'...
