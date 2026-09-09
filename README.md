@@ -8,11 +8,11 @@ MATLAB-based data analysis toolkit for both cage trainer and data recorded using
 
 ### 1. MATLAB Path (handled automatically)
 
-`BackRockFileLoader.m` sets up its own path on startup, in two steps:
+`BlackRockFileLoader.m` sets up its own path on startup, in two steps:
 
 1. **JLab code** — adds the repo root (for the top-level scripts) and the
    `ToolsAndFunctions` tree (the `BlackrockLoader` class + analyze tools). The
-   repo root is *not* added recursively, so dot-folders at the root (`.git`,
+   repo root is _not_ added recursively, so dot-folders at the root (`.git`,
    `.claude`, …) are never placed on the MATLAB path.
 2. **NPMK** — if `openNEV` is already found (e.g. NPMK lives under
    `ToolsAndFunctions/NPMK`), nothing more happens. Otherwise the script prompts
@@ -33,12 +33,14 @@ Download it from the official GitHub repository:
 👉 https://github.com/BlackrockNeurotech/NPMK
 
 **Installation steps:**
+
 1. Download or clone the NPMK repository.
 2. Move the downloaded NPMK folder into this repo's **`ToolsAndFunctions`** folder, so
    it lives at `JLab/ToolsAndFunctions/NPMK`. The loader's auto-path step (above)
    then picks it up automatically — no manual `addpath` is needed.
 
 If you would rather keep NPMK somewhere else, add it to the path yourself instead:
+
 ```matlab
 addpath(genpath('/path/to/NPMK'))
 savepath
@@ -52,9 +54,9 @@ savepath
 
 ```
 JLab/
-├── BackRockFileLoader.m         # driver: sets config, runs the batch loop, exports CSV/txt
+├── BlackRockFileLoader.m         # driver: sets config, runs the batch loop, exports CSV/txt
 ├── BlackRockFileAnalyzer.m      # reads trials CSV, fits/plots the psychometric curve
-├── CageTrianingDataLoading.m    # concatenates cage-trainer .json trials into one CSV
+├── CageTrainingDataLoading.m    # concatenates cage-trainer .json trials into one CSV
 ├── CageTrainingDataAnalyzer.m   # reads that CSV, plots the psychometric curve
 └── ToolsAndFunctions/
     ├── LoadingTools/
@@ -64,18 +66,15 @@ JLab/
     └── NPMK/                         # BlackRock NPMK toolkit (third-party, gitignored)
 ```
 
-> Note the filename typo `BackRockFileLoader` (vs. "BlackRock" everywhere else)
-> — run it exactly as named.
-
 ## Usage
 
 1. Complete all steps in **Prerequisites**
 2. Open MATLAB and navigate to the JLab folder
 3. Run the loader, then the analyzer:
-   - first the loader: ```BackRockFileLoader``` to parse the raw data into CSV/txt
-   - then the analyzer: ```BlackRockFileAnalyzer``` for the psychometric curve
+   - first the loader: `BlackRockFileLoader` to parse the raw data into CSV/txt
+   - then the analyzer: `BlackRockFileAnalyzer` for the psychometric curve
 
-`BackRockFileLoader.m` is a thin **driver script**: it sets the run config,
+`BlackRockFileLoader.m` is a thin **driver script**: it sets the run config,
 constructs a `BlackrockLoader`, and loops over date folders calling
 `loader.processFolder(...)`. All loading, parsing, preparation, and file writing
 live in the class (`ToolsAndFunctions/LoadingTools/BlackrockLoader.m`).
@@ -207,13 +206,13 @@ Use this to spot a new or renamed comment prefix, then add the matching key in
 A single recording is split across files **by filename prefix**, and each data
 product is verified present before use:
 
-| File                | Role                                              |
-|---------------------|---------------------------------------------------|
-| `NSP-*.nev`         | experiment comments + comment timing              |
-| `HUB-*.nev`         | online spike timing (+ per-spike waveforms)       |
-| `NSP-*.ns2`         | eye data (+ photodiode, by default channels 4-6)         |
-| `Hub-*.ns2`         | LFP                                               |
-| `NSP-*.ns4`         | photodiode (fallback/forced dedicated file)       |
+| File        | Role                                             |
+| ----------- | ------------------------------------------------ |
+| `NSP-*.nev` | experiment comments + comment timing             |
+| `HUB-*.nev` | online spike timing (+ per-spike waveforms)      |
+| `NSP-*.ns2` | eye data (+ photodiode, by default channels 4-6) |
+| `Hub-*.ns2` | LFP                                              |
+| `NSP-*.ns4` | photodiode (fallback/forced dedicated file)      |
 
 - **Comments are required.** If `NSP-*.nev` is missing, comments **fall back to
   `HUB-*.nev`** (legacy recordings wrote comments there). If neither has them,
@@ -257,10 +256,11 @@ product is verified present before use:
   openNEV's `'uv'` conversion); the scale is applied per trial slice during
   segmentation, so the exported waveforms are in µV while the largest array in
   the session never gets a full `double` copy. The naming distinguishes these
-  *online* (Central-sorted, recorded live) waveforms from offline-sorted
+  _online_ (Central-sorted, recorded live) waveforms from offline-sorted
   waveforms added later.
 
 `loadSession` returns a struct `S` with:
+
 - comments: `Events`, `EventTime`, `comments_source`;
 - spikes (`LoadOnlineSpikeData`): `S.online_spike`, a generic **source-agnostic
   container** (from `BlackrockLoader.spikeContainer()`) with `TimeSec`,
@@ -300,15 +300,15 @@ Each date folder is written into its own `export_data/<date>/` subfolder, with
 filenames prefixed `Blackrock_<date>_`. Up to **seven** files are produced; the
 `.mat` files are written only when the matching load flag is on:
 
-| File                                | When        | Contents                                              |
-|-------------------------------------|-------------|-------------------------------------------------------|
-| `Blackrock_<date>_expmeta_matlab.txt`  | always   | experiment-level metadata, one block per session      |
-| `Blackrock_<date>_trials_matlab.csv`   | always   | one row per trial (the parsed `trials` records)       |
-| `Blackrock_<date>_eye_matlab.mat`      | `LoadEyeData`      | eye channels cut into per-trial slices       |
-| `Blackrock_<date>_lfp_matlab.mat`      | `LoadLFPData`         | LFP stream cut into per-trial slices         |
-| `Blackrock_<date>_photodiode_matlab.mat` | `LoadPhotodiodeData` | photodiode stream cut into per-trial slices |
-| `Blackrock_<date>_spikes_matlab.mat`   | `LoadOnlineSpikeData` | online spikes rasterized per trial           |
-| `Blackrock_<date>_spikes_waveform_matlab.mat` | `LoadOnlineSpikeWaveform` | per-spike waveforms (µV) per trial           |
+| File                                          | When                      | Contents                                         |
+| --------------------------------------------- | ------------------------- | ------------------------------------------------ |
+| `Blackrock_<date>_expmeta_matlab.txt`         | always                    | experiment-level metadata, one block per session |
+| `Blackrock_<date>_trials_matlab.csv`          | always                    | one row per trial (the parsed `trials` records)  |
+| `Blackrock_<date>_eye_matlab.mat`             | `LoadEyeData`             | eye channels cut into per-trial slices           |
+| `Blackrock_<date>_lfp_matlab.mat`             | `LoadLFPData`             | LFP stream cut into per-trial slices             |
+| `Blackrock_<date>_photodiode_matlab.mat`      | `LoadPhotodiodeData`      | photodiode stream cut into per-trial slices      |
+| `Blackrock_<date>_spikes_matlab.mat`          | `LoadOnlineSpikeData`     | online spikes rasterized per trial               |
+| `Blackrock_<date>_spikes_waveform_matlab.mat` | `LoadOnlineSpikeWaveform` | per-spike waveforms (µV) per trial               |
 
 **`*_expmeta_matlab.txt`** — plain text. A single `.nev` may hold several
 experiment sessions, so the file has one `Session N:` header per session
@@ -317,6 +317,7 @@ written with `mat2str`, everything else as a string.
 
 **`*_trials_matlab.csv`** — the `trials` struct flattened with `struct2table`,
 one row per trial. Key column conventions:
+
 - `index` — a 0-based sequential row counter prepended for pandas
   (`read_csv(index_col='index')`). This is **not** the trial number.
 - `Trial_number` — the real, task-reported trial number, which **resets** across
@@ -343,6 +344,7 @@ one row per trial. Key column conventions:
 
 **`*_eye_matlab.mat`** — one variable `eye`, a struct that lines up 1:1
 with the CSV rows (trial dimension is index-aligned with `trials`):
+
 - `eye.data` — `nChan × nTrials × maxSamples` **`single`**, in µV, each
   trial's window `[Start − PreBuffer, End + PostBuffer]`, left-aligned and
   **NaN-padded** to the longest trial (missing-marker trials are all-NaN).
@@ -386,6 +388,7 @@ disk for the time.
 
 **`*_spikes_matlab.mat`** — one variable `online_spike`, same layout as `eye`
 but a binary raster:
+
 - `online_spike.data` — `NtotalUnit × nTrials × maxBins`, `0/1` (1 if any spike
   of that row falls in the bin), NaN-padded. Each row is one `(electrode, unit)`
   pair, so `NtotalUnit` sums isolated units across channels.
@@ -401,9 +404,10 @@ but a binary raster:
 the **same row order** as the raster (`info.Channel_Number` / `info.Unit_No`).
 Saved as `-v7.3` (HDF5) because the dense array can exceed the default MAT
 format's 2 GB per-variable cap.
+
 - `online_spike_waveform.waveform` — `NtotalUnit × nTrials × maxSpk × nSamp`, in
   **µV**, NaN-padded. The spike dimension `maxSpk` is the largest per-`(unit,
-  trial)` in-window spike count, shared across all rows/trials (so the busiest
+trial)` in-window spike count, shared across all rows/trials (so the busiest
   unit drives the array size — `segmentSpikeWaveforms` warns when it would exceed
   ~2 GB).
 - `online_spike_waveform.waveform_time` — `NtotalUnit × nTrials × maxSpk`, each
@@ -415,7 +419,7 @@ format's 2 GB per-variable cap.
 
 The per-trial window buffers and the spike bin width are set by
 `Segment_PreBuffer` / `Segment_PostBuffer` / `Segment_BinWidth` (ms) near the top
-of `BackRockFileLoader.m`.
+of `BlackRockFileLoader.m`.
 
 ### Comment parsing schema
 
@@ -443,12 +447,68 @@ the task's `[0, 360)` convention (see the CSV notes above).
 
 Parsing is set-oriented rather than per-comment: the whole comment matrix is
 tokenised at once, trial and session indices come from `cumsum`, and each
-*distinct* event body is classified once and its value scattered to the trials
+_distinct_ event body is classified once and its value scattered to the trials
 that used it. A 109k-comment session carries only ~600 distinct bodies, so this
 runs 12-16x faster than walking the comments one at a time. A comment matching
 neither the `Experiment` nor the `Trial N:` form no longer aborts the parse; it
 is skipped with a warning, and an unrecognised event body lands in
 `trials.undefined` as before.
+
+#### Event timestamp semantics (read before comparing timings)
+
+Not every timestamp in the output CSV means the same thing. jives emits each
+comment via one of two logging paths, and which one determines whether the
+timestamp reflects "when the event was detected" or "when the screen actually
+drew the change":
+
+- **Immediate** (`logging_thread.log_event`) — timestamp is the frame when the
+  handler line executed. Used for anything driven by gaze / detection (i.e. anything involving the eyetracker responding to subject's behavior & trial/reward start/end):
+  `Fixation acquired`, `Fixation exited`, `Target 1/2 acquired` (→ `Choicetime`),
+  `Broke fixation`, `Reward start/end`, `End - *`.
+- **On-flip** (`log_event_on_flip`, via `window.callOnFlip`) — timestamp is
+  posted at the _next_ vsync after queuing, so it lands ~1 frame later
+  (≈16.7 ms at 60 Hz). Used for anything driven by the screen: `Fixation point
+on/off`, `Target 1 presented`, `Target 2 presented`, `Targets off`,
+  `Target 1 off`, `Feedback flash on/off`.
+
+Consequences that are easy to mis-read as bugs:
+
+1. **`Fixation_acquired` can be earlier than `Fixation_point_on`.** If the
+   monkey's gaze is already inside the acceptance window on the first frame of
+   `_fixation_shown`, the immediate `Fixation acquired` log lands _before_ the
+   on_flip `Fixation point on` posts. Diff is typically −20 ms; not a
+   parser bug.
+2. **`Fixation_exited` can be ≈0 or slightly negative vs. `Fixation_point_off`
+   in `time_delay`.** Both events fall on the same frame (state handler
+   transitions and gaze leaves the window as the dot vanishes). The immediate
+   `Fixation exited` beats the on*flip `Fixation point off` by roughly one
+   frame minus render time — this is a \_healthy* trial, not a broken one.
+3. **`Requested_fixation_hold_time` doesn't match measured
+   `Target_1_presented − Fixation_acquired`.** The measured interval carries
+   `hold_time` + 1–3 frames of state-machine overhead + 1 frame of on_flip lag.
+   Expect a floor of ~30–60 ms extra at 60 Hz. If you need the true hold
+   duration you must either subtract on_flip lag (`1000/FPS` ms), or ask jives
+   to emit an on_flip `Fixation held` marker at the moment the hold gate opens.
+
+**Rule of thumb when validating diffs against `Requested_*` durations:**
+on-flip → on-flip diffs (`Target_1_presented → Target_2_presented`,
+`Targets_off → Fixation_point_off`) match their requested durations to within
+~1 frame because both endpoints share the same latency. Diffs that mix an
+on-flip endpoint with an immediate one (`Fixation_point_off →
+Fixation_exited`, `Fixation_acquired → Target_1_presented`) carry ±half a
+frame of extra noise on top of whatever state-machine cost sits between them.
+
+**What _is_ directly measurable to ~1 frame:** on-screen durations that use
+two on-flip endpoints. The clearest is the fixation dot's total on-screen
+lifetime, `Fixation_point_off − Fixation_point_on` — this is the actual number
+of ms the red dot was drawn (spanning fixation-hold + target presentations +
+delay, since the dot stays up through all of them in time_delay).
+
+The event definitions live in `jives/experiment/{fixation,visual_saccades,
+time_delay}_experiment.py`; search for `log_event(` (immediate) vs
+`log_event_on_flip(` (on-flip). A full per-event breakdown for time_delay
+lives in
+`mendelevich/data-analysis/data_helpers/conversion/UNDERSTANDING.md` §10.
 
 #### Adding a new comment key
 
@@ -459,21 +519,20 @@ For any event whose text matches a shape the parser already knows, there are
    to the appropriate map.
 2. **`BlackrockLoader.defaultTrialTemplate()`** — add `Field_name`, initialised
    `NaN` for a scalar or text field, `[NaN, NaN]` for a coordinate pair. The
-   template's field *order* is the CSV column order, so insert it where you want
+   template's field _order_ is the CSV column order, so insert it where you want
    the column.
 
 **Which map you choose is how you declare the shape** — that is the whole
 mechanism, so pick by how the comment reads:
 
-| map | comment text | what is stored |
-| --- | --- | --- |
-| `TimeEvents` | `Widget engaged` (bare name) | the comment's timestamp |
-| `SegmentEvents` | `Widget color blue` | the text after the **key**, verbatim |
-| `InformationEvents` | `Widget position (1.5, -2.5) deg` | a `[x y]` pair |
-| `InformationEvents` | `Reward start (250.0ms)` | the timestamp **and** `Reward_amount` |
-| `InformationEvents` | `Requested widget delay 250 ms` | a scalar (`None`/`none` → `NaN`) |
-| `InformationEvents` | `Widget size 4.00 deg` | a scalar |
-| `PolarEvents` | `Widget position polar (theta 45.00, rho 7.00) deg` | theta into the **first** mapped field, rho into the **second** |
+| map                 | comment text                      | what is stored                        |
+| ------------------- | --------------------------------- | ------------------------------------- |
+| `TimeEvents`        | `Widget engaged` (bare name)      | the comment's timestamp               |
+| `SegmentEvents`     | `Widget color blue`               | the text after the **last** space     |
+| `InformationEvents` | `Widget position (1.5, -2.5) deg` | a `[x y]` pair                        |
+| `InformationEvents` | `Reward start (250.0ms)`          | the timestamp **and** `Reward_amount` |
+| `InformationEvents` | `Requested widget delay 250 ms`   | a scalar (`None`/`none` → `NaN`)      |
+| `InformationEvents` | `Widget size 4.00 deg`            | a scalar                              |
 
 Everything downstream is derived from those two edits, so do not declare it
 anywhere: whether the exported column is text or numeric, the `_x`/`_y` split of
@@ -521,7 +580,7 @@ unparsed comment strings when adding or fixing a comment key.)
 ### Setting up the data path
 
 The driver finds your data by assembling a folder path from a few editable
-variables at the top of `BackRockFileLoader.m`. Set these to point at your own
+variables at the top of `BlackRockFileLoader.m`. Set these to point at your own
 data, then run the script — the loader resolves the `.nev`/`.ns2` files inside
 each folder by the prefix schema above.
 
@@ -534,15 +593,19 @@ OutputFolder = 'export_data';  % where parsed data is written
 ```
 
 The driver builds the input and export roots as:
+
 ```matlab
 DataTypePath = fullfile(Basic_Path, ['Monkey ' Monkey], Location, DataType);
 ExportPath   = fullfile(Basic_Path, ['Monkey ' Monkey], Location, OutputFolder);
 ```
+
 so the expected folder layout on disk is:
+
 ```
 <Basic_Path>/Monkey <Monkey>/<Location>/<DataType>/<YYYY-MM-DD>/    ← contains the .nev/.ns2 files
 <Basic_Path>/Monkey <Monkey>/<Location>/export_data/<YYYY-MM-DD>/   ← parsed .txt/.csv output is written here
 ```
+
 If your data already lives under a different layout, just overwrite `DataTypePath`
 and `ExportPath` directly with your own absolute paths.
 
@@ -550,11 +613,13 @@ and `ExportPath` directly with your own absolute paths.
 
 The driver processes one or more `YYYY-MM-DD` session folders in a single run.
 Set the `Folder` variable to choose which ones:
+
 ```matlab
 Folder = '2026-06-17';                    % a single session folder
 Folder = {'2026-06-17','2026-06-18'};     % several folders, loaded in order
 Folder = {};                              % every YYYY-MM-DD folder under DataTypePath
 ```
+
 For each folder the driver calls `loader.processFolder(...)`, which **loads →
 parses → adds features → exports** in turn, writing the per-session output files
 (`Blackrock_<date>_expmeta_matlab.txt` and `Blackrock_<date>_trials_matlab.csv`)
@@ -570,7 +635,7 @@ the batch continues with the remaining folders. A **batch summary** listing the
 
 ### Cage trainer data
 
-`CageTrianingDataLoading.m` concatenates the per-trial `.json` files into one
+`CageTrainingDataLoading.m` concatenates the per-trial `.json` files into one
 `all_trials_<date>.csv`; `CageTrainingDataAnalyzer.m` reads that CSV and plots
 the psychometric curve. Set the corresponding path variables at the top of those
 scripts the same way as the BlackRock loader.

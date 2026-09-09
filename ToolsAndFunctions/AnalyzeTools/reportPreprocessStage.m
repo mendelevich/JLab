@@ -1,7 +1,7 @@
 function reportPreprocessStage(idx, total, label)
 % Print the banner that opens one preprocessing stage.
 %
-% Same '===== ... =====' shape BackRockFileLoader.m uses for its per-folder
+% Same '===== ... =====' shape BlackRockFileLoader.m uses for its per-folder
 % progress, so both drivers read alike.
 %
 % The banner is the DRIVER's job, not the wrapper's: only the driver knows a
@@ -17,5 +17,5 @@ function reportPreprocessStage(idx, total, label)
 %
 % Xuefei Yu 2026
 
-    fprintf('\n===== [%d/%d] %s =====\n', idx, total, label);
+fprintf('\n===== [%d/%d] %s =====\n', idx, total, label);
 end
