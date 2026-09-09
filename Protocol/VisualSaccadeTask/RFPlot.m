@@ -491,7 +491,12 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
         [cond, ~, condId] = uniquetol([angRaw(valid), eccRaw(valid)], 1e-6, ...
             'ByRows', true, 'DataScale', 1);
         nCond = size(cond, 1);
-        angC  = mod(90 - cond(:, 1), 360);    % compass Target_1_angle -> math convention
+        % Target_1_angle is already in the convention getSectorIdx wants (0 = +x,
+        % counter-clockwise, [0, 360)) -- it is stored exactly as the task's
+        % 'position polar' comment sends it. This used to be
+        % 'mod(90 - cond(:,1), 360)' to undo the old compass frame; applying that
+        % now would rotate every receptive field by 90 deg and mirror it.
+        angC  = cond(:, 1);
         eccC  = cond(:, 2);
         sIdxC = arrayfun(@(k) getSectorIdx(angC(k), eccC(k), ECC_EDGES), (1:nCond)');
 
