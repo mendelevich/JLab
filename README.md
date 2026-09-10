@@ -225,17 +225,21 @@ Use this to spot a new or renamed comment prefix, then add the matching key in
 A single recording is split across files **by filename prefix**, and each data
 product is verified present before use:
 
-| File        | Role                                             |
-| ----------- | ------------------------------------------------ |
-| `NSP-*.nev` | experiment comments + comment timing             |
-| `HUB-*.nev` | online spike timing (+ per-spike waveforms)      |
-| `NSP-*.ns2` | eye data (+ photodiode, by default channels 4-6) |
-| `Hub-*.ns2` | LFP                                              |
-| `NSP-*.ns4` | photodiode (fallback/forced dedicated file)      |
+| File        | Role                                                        |
+| ----------- | ----------------------------------------------------------- |
+| `HUB-*.nev` | experiment comments + comment timing, and online spike timing (+ per-spike waveforms) |
+| `NSP-*.nev` | comments fallback only (see below)                          |
+| `NSP-*.ns2` | eye data (+ photodiode, by default channels 4-6)            |
+| `Hub-*.ns2` | LFP                                                         |
+| `NSP-*.ns4` | photodiode (fallback/forced dedicated file)                 |
 
-- **Comments are required.** If `NSP-*.nev` is missing, comments **fall back to
-  `HUB-*.nev`** (legacy recordings wrote comments there). If neither has them,
-  that folder errors and is reported as `failed`.
+- **Comments are required**, and normally come from `HUB-*.nev` — the same file
+  as the spikes, which is why one parsed `.nev` is shared between them. If that
+  file carries no comments (or is absent), they **fall back to `NSP-*.nev`**: a
+  short window in mid-2026 wrote comments there instead. If neither has them,
+  that folder errors and is reported as `failed`. Note the fallback tests the
+  *content*, not just the filename — most sessions ship a small `NSP-*.nev` stub
+  that has headers but no comment packets.
 - **Eye, LFP, spikes, and photodiode are all soft.** A missing or unreadable
   file is recorded in a status string and that product is skipped — the folder
   still succeeds. The prefixes (`NSP`/`HUB`/`Hub`), the `.ns2`/`.ns4`

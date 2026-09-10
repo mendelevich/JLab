@@ -5,7 +5,7 @@ classdef BlackrockLoader < handle
 % each file by its filename prefix and verifies the expected data is actually
 % present before using it:
 %   <CommentPrefix_primary>-*.nev  -> experiment comments + comment timing
-%   <CommentPrefix_legacy>-*.nev   -> legacy fallback for comments
+%   <CommentPrefix_legacy>-*.nev   -> fallback source for comments
 %   <SpikePrefix>-*.nev            -> online spike timing
 %   <EyePrefix>-*.ns2           -> eye data (and, by default, the photodiode)
 %   <LFPPrefix>-*.ns2              -> local field potential (Hub-*.ns2 by default)
@@ -15,8 +15,9 @@ classdef BlackrockLoader < handle
 %                                      PhotodiodeUseSeparateFile is set, goes
 %                                      straight to) a dedicated
 %                                      <PhotodiodePrefix>-*.ns4 file
-% Legacy exception: in early sessions comments AND spikes were both written to
-% the HUB-*.nev file, so comments fall back from NSP to HUB.
+% Comments and online spikes normally share the HUB-*.nev file. Exception: for a
+% short window in mid-2026 comments were written to NSP-*.nev instead, so they
+% fall back from HUB to NSP when the HUB file carries none.
 %
 % This is a stateful (handle) config-property class: the config properties below
 % hold the file schema, the load flags, the parsing schema (templates + event
@@ -52,8 +53,13 @@ classdef BlackrockLoader < handle
 
     properties
         % --- file schema (which file holds which data product) ---
-        CommentPrefix_primary = 'NSP'    % NSP-*.nev: comments + comment timing
-        CommentPrefix_legacy  = 'HUB'    % legacy fallback for comments
+        CommentPrefix_primary = 'HUB'    % HUB-*.nev: comments + comment timing
+        CommentPrefix_legacy  = 'NSP'    % NSP-*.nev: fallback. A brief mid-2026
+                                          % window wrote comments here instead;
+                                          % '_legacy' names the ROLE (second in
+                                          % line), not the age -- those files are
+                                          % NEWER than the HUB ones it falls back
+                                          % from.
         SpikePrefix           = 'HUB'    % HUB-*.nev: online spike timing
         EyePrefix          = 'NSP'    % NSP-*.ns2: eye (+ photodiode) data
         EyeIdentifier      = '*.ns2'  % eye stream extension
@@ -249,9 +255,9 @@ classdef BlackrockLoader < handle
             S.timeresolution = [];
 
             % Parsed .nev structs shared between loadComments and loadSpikes for
-            % this folder only: on legacy recordings both live in the same HUB
-            % file, and parsing it costs a full read of a multi-GB file. Local,
-            % so it is released when this call returns.
+            % this folder only: both normally live in the same HUB file, and
+            % parsing it costs a full read of a multi-GB file. Local, so it is
+            % released when this call returns.
             nevCache = containers.Map('KeyType', 'char', 'ValueType', 'any');
 
             % --- Comments + comment timing (required): throws if none found ---
@@ -270,8 +276,8 @@ classdef BlackrockLoader < handle
 
             % --- Online spike timing (gated, soft failure) ---
             % Deliberately loaded right after comments, before the continuous files:
-            % on legacy recordings both come from the same HUB .nev, so running
-            % them back-to-back lets the shared parse be dropped below instead of
+            % both normally come from the same HUB .nev, so running them
+            % back-to-back lets the shared parse be dropped below instead of
             % staying resident through the (much larger) continuous-stream loads.
             if S.LoadOnlineSpikeData
                 try
@@ -371,9 +377,9 @@ classdef BlackrockLoader < handle
 
           function C = loadComments(obj, DataFolder, nevCache)
         % Load comment strings + their timing from one date folder (required
-        % product). Resolves the .nev by role prefix: NSP primary, then HUB
-        % (legacy recordings kept comments in the HUB file). Returns a struct
-        % with .Events, .EventTime, .EventTick, .TimeRes, .comments_source.
+        % product). Resolves the .nev by role prefix: HUB primary, then NSP
+        % (a brief mid-2026 window wrote comments to the NSP file). Returns a
+        % struct with .Events, .EventTime, .EventTick, .TimeRes, .comments_source.
         %
         % EventTick is the raw uint64 clock ticks; EventTime is the same instants
         % in seconds, DERIVED from the ticks in commentFields (one place, so the
@@ -389,9 +395,10 @@ classdef BlackrockLoader < handle
         % Pure: opens only the .nev it needs, touches no session state.
         %
         % nevCache is an optional containers.Map of already-parsed NEV structs
-        % keyed by full path (see loadSession). Legacy recordings keep comments
-        % AND spikes in the same HUB file, which loadSpikes then wants too, so
-        % sharing the cache saves a second full parse of a multi-GB file. Note
+        % keyed by full path (see loadSession). Comments AND spikes normally live
+        % in the same HUB file, which loadSpikes then wants too, so sharing the
+        % cache saves a second full parse of a multi-GB file on nearly every
+        % session -- it is the common path, not an edge case. Note
         % openNEV's 'noread' is NOT a cheaper alternative here: it skips the
         % comment packets along with the waveforms.
             if nargin < 3; nevCache = []; end
@@ -401,21 +408,25 @@ classdef BlackrockLoader < handle
             C.TimeRes         = [];           % ticks per second for EventTick
             C.comments_source = '';
 
-            nev_all = dir(fullfile(DataFolder, '*.nev'));
-            nsp_nev = BlackrockLoader.pickByPrefix(nev_all, obj.CommentPrefix_primary);  % '' if none
-            hub_nev = BlackrockLoader.pickByPrefix(nev_all, obj.CommentPrefix_legacy);   % '' if none
+            % Named for the ROLE they play, not for a prefix: which file each
+            % holds is the schema's call, and hardcoding 'nsp_'/'hub_' here made
+            % the two read backwards the moment the schema was corrected.
+            nev_all      = dir(fullfile(DataFolder, '*.nev'));
+            primary_nev  = BlackrockLoader.pickByPrefix(nev_all, obj.CommentPrefix_primary); % '' if none
+            fallback_nev = BlackrockLoader.pickByPrefix(nev_all, obj.CommentPrefix_legacy);  % '' if none
 
-            if ~isempty(nsp_nev)
-                nsp_data = BlackrockLoader.openNevCached(fullfile(DataFolder, nsp_nev), nevCache);
-                if BlackrockLoader.hasComments(nsp_data)
-                    C = BlackrockLoader.commentFields(nsp_data, nsp_nev);
+            if ~isempty(primary_nev)
+                primary_data = BlackrockLoader.openNevCached(fullfile(DataFolder, primary_nev), nevCache);
+                if BlackrockLoader.hasComments(primary_data)
+                    C = BlackrockLoader.commentFields(primary_data, primary_nev);
                 end
             end
-            if isempty(C.comments_source) && ~isempty(hub_nev)
-                hub_data = BlackrockLoader.openNevCached(fullfile(DataFolder, hub_nev), nevCache);
-                if BlackrockLoader.hasComments(hub_data)
-                    % legacy: comments live in the HUB file
-                    C = BlackrockLoader.commentFields(hub_data, hub_nev);
+            if isempty(C.comments_source) && ~isempty(fallback_nev)
+                % The primary file exists but carries no comments (or is absent):
+                % this session is from the window that wrote them to the other file.
+                fallback_data = BlackrockLoader.openNevCached(fullfile(DataFolder, fallback_nev), nevCache);
+                if BlackrockLoader.hasComments(fallback_data)
+                    C = BlackrockLoader.commentFields(fallback_data, fallback_nev);
                 end
             end
             if isempty(C.comments_source)
@@ -540,8 +551,8 @@ classdef BlackrockLoader < handle
         % Pure: opens only the .nev it needs, touches no session state.
         %
         % nevCache is the same optional already-parsed-NEV map loadComments
-        % takes; on legacy recordings both products come out of one HUB file, so
-        % passing it means that file is parsed once per folder instead of twice.
+        % takes; both products normally come out of one HUB file, so passing it
+        % means that file is parsed once per folder instead of twice.
             if nargin < 3; nevCache = []; end
             R.online_spike = BlackrockLoader.spikeContainer();
             R.spike_status = '';
@@ -1682,7 +1693,7 @@ classdef BlackrockLoader < handle
         %
         % Both branches of loadComments come through here for the same reason:
         % duplicating these five assignments was itself a way for the primary
-        % and legacy paths to diverge.
+        % and fallback paths to diverge.
             C.Events          = nev.Data.Comments.Text;
             C.EventTick       = nev.Data.Comments.TimeStamp;      % uint64, exact
             C.TimeRes         = double(nev.MetaTags.TimeRes);     % ticks per second
