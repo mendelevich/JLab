@@ -48,6 +48,7 @@ function summary = behaviorCheck(cd, plotFlag, savePath, reCompute)
     % cached run can both return the summary and redraw the panels via
     % plotBehaviorStats without recomputing.
     B = getCachedPayload(savePath, 'BehaviorSummary', reCompute, @() behaviorStats(cd));
+    B.saccadeConditions = upgradeSaccadeConditions(B.saccadeConditions);
     if plotFlag
         plotBehaviorStats(B);
     end
@@ -243,42 +244,64 @@ end
 % -------------------------------------------------------------------------
 % (3) / (5) Trials per condition
 % -------------------------------------------------------------------------
+function SC = upgradeSaccadeConditions(SC)
+% Caches written before 2026-09-10 name these fields after the trial columns'
+% old names -- angles/ecc, from Target_*_angle / Target_*_eccentricity. Rename
+% them on load so an old BehaviorSummary.mat still redraws, rather than making
+% every past session recompute for what is only a vocabulary change. Same
+% tolerate-the-old-cache treatment the blank-task row gets above.
+%
+% Delete once no BehaviorSummary predating the rename is left; a payload written
+% by computeSaccadeConditions below never has the old fields, so this is a no-op
+% on everything current.
+    if isfield(SC, 'angles')
+        SC.thetas = SC.angles;
+        SC = rmfield(SC, 'angles');
+    end
+    if isfield(SC, 'rows') && isfield(SC.rows, 'ecc')
+        if ~isempty(SC.rows)
+            [SC.rows.rho] = SC.rows.ecc;
+        end
+        SC.rows = rmfield(SC.rows, 'ecc');
+    end
+end
+
 function SC = computeSaccadeConditions(cd)
-% Trials per condition for each saccade task: target angle and eccentricity are
-% the two looping variables, so eccentricity becomes one row and the counts run
-% over angle. present/hasConditions separate "no saccade task at all" from
-% "saccade task(s), but none carry a recorded eccentricity".
+% Trials per condition for each saccade task: target theta and rho are the two
+% looping variables, so rho becomes one row and the counts run over theta.
+% present/hasConditions separate "no saccade task at all" from "saccade task(s),
+% but none carry a recorded rho".
     grps = saccadeGroups(cd);
-    SC = struct('present', ~isempty(grps), 'hasConditions', false, 'angles', [], ...
-               'rows', struct('name', {}, 'ecc', {}, 'nCor', {}));
+    SC = struct('present', ~isempty(grps), 'hasConditions', false, 'thetas', [], ...
+               'rows', struct('name', {}, 'rho', {}, 'nCor', {}));
     if isempty(grps);  return;  end
 
-    % Every (group, eccentricity) pair becomes one row of the nested grid.
-    rowspec = struct('name', {}, 'rows', {}, 'ecc', {});
+    % Every (group, rho) pair becomes one row of the nested grid.
+    rowspec = struct('name', {}, 'rows', {}, 'rho', {});
     for g = 1:numel(grps)
         r   = grps(g).rows;
-        ecc = round(cd.Target_1_eccentricity(r), 1);
-        for e = unique(ecc(~isnan(ecc)))'
+        rho = round(cd.Target_1_rho(r), 1);
+        for e = unique(rho(~isnan(rho)))'
             rowspec(end+1) = struct('name', grps(g).name, ...
-                'rows', r(ecc == e), 'ecc', e);  %#ok<AGROW>
+                'rows', r(rho == e), 'rho', e);  %#ok<AGROW>
         end
     end
     if isempty(rowspec);  return;  end
     SC.hasConditions = true;
 
-    % One angle axis shared by every row: each row builds its own categories
-    % otherwise, and the same angle then lands at a different x per row.
-    all_ang   = round(cd.Target_1_angle(vertcat(rowspec.rows)), 1);
-    SC.angles = unique(all_ang(~isnan(all_ang)));
+    % One theta axis shared by every row: each row builds its own categories
+    % otherwise, and the same theta then lands at a different x per row.
+    all_theta = round(cd.Target_1_theta(vertcat(rowspec.rows)), 1);
+    SC.thetas = unique(all_theta(~isnan(all_theta)));
 
-    SC.rows = struct('name', {}, 'ecc', {}, 'nCor', {});
+    SC.rows = struct('name', {}, 'rho', {}, 'nCor', {});
     for i = 1:numel(rowspec)
-        ang  = round(cd.Target_1_angle(rowspec(i).rows), 1);
-        outc = cd.Trialoutcome(rowspec(i).rows);
-        % Successful trials only; a saccade task has no wrong trials. Angles the
+        theta = round(cd.Target_1_theta(rowspec(i).rows), 1);
+        outc  = cd.Trialoutcome(rowspec(i).rows);
+        % Successful trials only; a saccade task has no wrong trials. Thetas the
         % row never ran count 0 and leave an empty column.
-        nCor = arrayfun(@(a) sum(ang == a & strcmp(outc, 'correct')), SC.angles);
-        SC.rows(i) = struct('name', rowspec(i).name, 'ecc', rowspec(i).ecc, 'nCor', nCor);
+        nCor = arrayfun(@(a) sum(theta == a & strcmp(outc, 'correct')), SC.thetas);
+        SC.rows(i) = struct('name', rowspec(i).name, 'rho', rowspec(i).rho, 'nCor', nCor);
     end
 end
 
@@ -417,7 +440,7 @@ function tbl = conditionTable(cd)
 %
 % "Valid" matches the condition panels: correct trials for the saccade / fixation
 % tasks, completed choice trials (Save_complete + a made choice) for the choice
-% tasks. The condition is (target angle, eccentricity) for saccade tasks, the
+% tasks. The condition is (target theta, rho) for saccade tasks, the
 % signed stimulus for the choice tasks, and none otherwise.
     tasks = unique(cd.Task, 'stable');
     n     = numel(tasks);
@@ -475,21 +498,21 @@ end
 
 
 function s = saccadeConditionSummary(cd, rows)
-% nTrials / sparsest (angle, eccentricity) condition over the given (correct) rows.
+% nTrials / sparsest (theta, rho) condition over the given (correct) rows.
     s = struct('nTrials', numel(rows), 'minRep', NaN, 'minRepCond', '');
-    if isempty(rows) || ~all(ismember({'Target_1_angle', 'Target_1_eccentricity'}, ...
+    if isempty(rows) || ~all(ismember({'Target_1_theta', 'Target_1_rho'}, ...
                                        cd.Properties.VariableNames))
         return
     end
-    ang = round(cd.Target_1_angle(rows), 1);
-    ecc = round(cd.Target_1_eccentricity(rows), 1);
-    ok  = ~isnan(ang) & ~isnan(ecc);
+    theta = round(cd.Target_1_theta(rows), 1);
+    rho   = round(cd.Target_1_rho(rows), 1);
+    ok    = ~isnan(theta) & ~isnan(rho);
     if ~any(ok);  return;  end
-    [uc, ~, id] = unique([ang(ok) ecc(ok)], 'rows');
+    [uc, ~, id] = unique([theta(ok) rho(ok)], 'rows');
     reps = accumarray(id, 1);
     [mn, mi] = min(reps);
     s.minRep     = mn;
-    s.minRepCond = sprintf('ang%g_ecc%g', uc(mi, 1), uc(mi, 2));
+    s.minRepCond = sprintf('theta%g_rho%g', uc(mi, 1), uc(mi, 2));
 end
 
 
@@ -674,8 +697,8 @@ end
 
 
 function drawSaccadeConditions(tl, tile, SC)
-% Trials per condition for each saccade task; row = eccentricity, bars run over
-% angle, sharing one angle axis so rows read against each other.
+% Trials per condition for each saccade task; row = rho, bars run over theta,
+% sharing one theta axis so rows read against each other.
     if ~SC.present
         blankPanel(nexttile(tl, tile), 'No saccade task');
         return
@@ -685,7 +708,7 @@ function drawSaccadeConditions(tl, tile, SC)
         return
     end
 
-    nAng  = numel(SC.angles);
+    nTheta = numel(SC.thetas);
     inner = tiledlayout(tl, numel(SC.rows), 1, 'TileSpacing', 'tight', 'Padding', 'none');
     inner.Layout.Tile = tile;
 
@@ -695,18 +718,18 @@ function drawSaccadeConditions(tl, tile, SC)
         % Green, matching the running-success panel: these bars are SUCCESSFUL
         % trials (a saccade task has no wrong trials), so they sit on the
         % completion axis, not the choice-accuracy axis the panel below uses.
-        bar(ax, 1:nAng, SC.rows(i).nCor, 'FaceColor', col.success);
-        xlim(ax, [0.5 nAng+0.5]);
-        ylabel(ax, sprintf('%.3g\\circ', SC.rows(i).ecc));
-        set(ax, 'LineWidth', 1, 'FontSize', 9, 'XTick', 1:nAng);
+        bar(ax, 1:nTheta, SC.rows(i).nCor, 'FaceColor', col.success);
+        xlim(ax, [0.5 nTheta+0.5]);
+        ylabel(ax, sprintf('%.3g\\circ', SC.rows(i).rho));
+        set(ax, 'LineWidth', 1, 'FontSize', 9, 'XTick', 1:nTheta);
         box(ax, 'off');
         if i == 1
-            title(ax, 'Successful saccade trials per condition (row = eccentricity)', ...
+            title(ax, 'Successful saccade trials per condition (row = rho)', ...
                 'FontSize', 10);
         end
         if i == numel(SC.rows)
-            xticklabels(ax, compose('%.0f', SC.angles));
-            xlabel(ax, 'Target angle (\circ)');
+            xticklabels(ax, compose('%.0f', SC.thetas));
+            xlabel(ax, 'Target theta (\circ)');
         else
             xticklabels(ax, []);
         end

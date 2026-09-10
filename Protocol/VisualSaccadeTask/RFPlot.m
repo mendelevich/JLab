@@ -62,21 +62,21 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
     SMOOTH_SIGMA = 2.5;
     GRID_EDGES   = -20:1:20;
     GRID_CTRS    = (GRID_EDGES(1:end-1) + GRID_EDGES(2:end)) / 2;
-    ECC_EDGES    = [0, 8, 14, 25];      % deg; band upper edge is inclusive per band
-    nRings       = numel(ECC_EDGES) - 1;
+    RHO_EDGES    = [0, 8, 14, 25];      % deg; band upper edge is inclusive per band
+    nRings       = numel(RHO_EDGES) - 1;
     RF_EXTRAP_MIN = 10;
-    N_SECTORS    = 8 * nRings;          % 8 compass octants x nRings eccentricity bands
+    N_SECTORS    = 8 * nRings;          % 8 compass octants x nRings rho bands
     PSTH_CLR     = [0.20 0.50 0.90];
     RASTER_CLR   = [0.75 0.80 0.92];   % light ticks behind the PSTH
     WAVE_FS      = 30000;              % Blackrock NEV waveform sample rate (Hz)
     alignOpts    = {'Visual onset', 'Saccade onset'};
 
-    % Nominal compass-octant centre angles (secNum order: E,NE,N,NW,W,SW,S,SE) and
-    % eccentricity-band strings, used only as a fallback title for empty sectors --
-    % real panels are titled from the actual (angle, ecc) of their contributing
+    % Nominal compass-octant centre thetas (secNum order: E,NE,N,NW,W,SW,S,SE) and
+    % rho-band strings, used only as a fallback title for empty sectors --
+    % real panels are titled from the actual (theta, rho) of their contributing
     % trials (built per-unit in computeUnit, see st.psth.label).
-    OCT_ANGLES   = [0, 45, 90, 135, 180, 225, 270, 315];
-    ECC_BAND_STR = arrayfun(@(i) sprintf('%g-%g', ECC_EDGES(i), ECC_EDGES(i+1)), ...
+    OCT_THETAS   = [0, 45, 90, 135, 180, 225, 270, 315];
+    RHO_BAND_STR = arrayfun(@(i) sprintf('%g-%g', RHO_EDGES(i), RHO_EDGES(i+1)), ...
         1:nRings, 'UniformOutput', false);
     deg = char(176);
 
@@ -245,7 +245,7 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
 
     axHM = axes('Parent', pnl, 'Units', 'normalized', 'Position', [hmx, y3, hmw, hmh]);
 
-    % Sector panels: 8 compass octants (secNum order) x nRings eccentricity bands,
+    % Sector panels: 8 compass octants (secNum order) x nRings rho bands,
     % ring 1 = innermost/nearest the heatmap. Each panel steps outward along its
     % octant's (DIRX,DIRY) direction by one panel+gap per additional ring -- this
     % generalizes the old hand-placed near/far layout to any nRings.
@@ -422,7 +422,7 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
     end
 
     % ---------------- pure per-unit compute (no graphics) -----------------
-    % Groups trials by their (Target_1_angle, Target_1_eccentricity) condition
+    % Groups trials by their (Target_1_theta, Target_1_rho) condition
     % once, then does the RF-grid and spatial-PSTH math per condition/sector
     % instead of recomputing the shared grid cell / sector for every trial.
     function st = computeUnit(r, rfWin, psthWin, alignStr, doFit)
@@ -476,29 +476,29 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
         presOK = ~isnan(cd.Target_1_presented) & ~isnan(xk) & ~isnan(yk);
         tgt_xy = unique([xk(presOK), yk(presOK)], 'rows');
 
-        % ---- Stage 1: enumerate unique (angle, eccentricity) conditions ----
-        % uniquetol (not unique/round): angle & eccentricity are floats, so grouping
+        % ---- Stage 1: enumerate unique (theta, rho) conditions ----
+        % uniquetol (not unique/round): theta & rho are floats, so grouping
         % needs float-noise tolerance -- but rounding (tried, verified against real
         % data) both merges genuinely distinct conditions and pushes borderline
-        % eccentricities across an ECC_EDGES band boundary (e.g. 9.9998 -> 10.0). A
+        % rho values across an RHO_EDGES band boundary (e.g. 9.9998 -> 10.0). A
         % tight ABSOLUTE tolerance (DataScale=1) avoids that: uniquetol's default
-        % scales relative to the whole [angle,ecc] matrix, which under/over-merges
-        % when the two columns have very different ranges (angle ~360, ecc ~20) --
+        % scales relative to the whole [theta,rho] matrix, which under/over-merges
+        % when the two columns have very different ranges (theta ~360, rho ~20) --
         % the same failure mode rounding had, just via a different mechanism.
         valid = ~isnan(xk) & ~isnan(yk) & ~isnan(mRelKt);
-        angRaw = cd.Target_1_angle;
-        eccRaw = cd.Target_1_eccentricity;
-        [cond, ~, condId] = uniquetol([angRaw(valid), eccRaw(valid)], 1e-6, ...
+        thetaRaw = cd.Target_1_theta;
+        rhoRaw = cd.Target_1_rho;
+        [cond, ~, condId] = uniquetol([thetaRaw(valid), rhoRaw(valid)], 1e-6, ...
             'ByRows', true, 'DataScale', 1);
         nCond = size(cond, 1);
-        % Target_1_angle is already in the convention getSectorIdx wants (0 = +x,
+        % Target_1_theta is already in the convention getSectorIdx wants (0 = +x,
         % counter-clockwise, [0, 360)) -- it is stored exactly as the task's
         % 'position polar' comment sends it. This used to be
         % 'mod(90 - cond(:,1), 360)' to undo the old compass frame; applying that
         % now would rotate every receptive field by 90 deg and mirror it.
-        angC  = cond(:, 1);
-        eccC  = cond(:, 2);
-        sIdxC = arrayfun(@(k) getSectorIdx(angC(k), eccC(k), ECC_EDGES), (1:nCond)');
+        thetaC  = cond(:, 1);
+        rhoC  = cond(:, 2);
+        sIdxC = arrayfun(@(k) getSectorIdx(thetaC(k), rhoC(k), RHO_EDGES), (1:nCond)');
 
         % Grid placement reuses the existing x/y columns (one representative
         % position per condition; members of a condition share one target).
@@ -537,7 +537,7 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
             raster{s} = cellfun(@(sp) sp(sp >= psthWin(1) & sp <= psthWin(2)), spMs, 'UniformOutput', false);
         end
 
-        % Panel titles: actual (angle, eccentricity) of the real condition(s) that
+        % Panel titles: actual (theta, rho) of the real condition(s) that
         % contributed trials to each sector (nominal octant/band as fallback when a
         % sector has no trials), built here since cond/sIdxC are per-unit-call already.
         sectorLabel = repmat({''}, N_SECTORS, 1);
@@ -546,7 +546,7 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
             if isempty(inSec)
                 sOct  = ceil(s / nRings);
                 sRing = s - (sOct - 1) * nRings;
-                sectorLabel{s} = sprintf('%d%s, ecc %s (no data)', OCT_ANGLES(sOct), deg, ECC_BAND_STR{sRing});
+                sectorLabel{s} = sprintf('%d%s, rho %s (no data)', OCT_THETAS(sOct), deg, RHO_BAND_STR{sRing});
             else
                 parts = arrayfun(@(k) sprintf('%.0f%s/%.1f', cond(k, 1), deg, cond(k, 2)), inSec, 'UniformOutput', false);
                 sectorLabel{s} = strjoin(parts, ', ');
@@ -818,19 +818,19 @@ function gridSm = smoothGrid(gridFR, gridCnt, GRID_CTRS, SMOOTH_SIGMA, RF_EXTRAP
 end
 
 
-function sIdx = getSectorIdx(ang, ecc, ECC_EDGES)
-% (angle deg, eccentricity deg) -> sector index. 8 equal 45 deg compass octants x
-% numel(ECC_EDGES)-1 eccentricity bands (each band's upper edge inclusive); ring 1
+function sIdx = getSectorIdx(theta, rho, RHO_EDGES)
+% (theta deg, rho deg) -> sector index. 8 equal 45 deg compass octants x
+% numel(RHO_EDGES)-1 rho bands (each band's upper edge inclusive); ring 1
 % is the innermost/nearest band.
-    if isnan(ang) || isnan(ecc)
+    if isnan(theta) || isnan(rho)
         sIdx = NaN;  return;
     end
-    nRings = numel(ECC_EDGES) - 1;
-    ang360 = mod(ang, 360);
-    secNum = floor(mod(ang360 + 22.5, 360) / 45) + 1;   % 1-8: E,NE,N,NW,W,SW,S,SE
+    nRings   = numel(RHO_EDGES) - 1;
+    theta360 = mod(theta, 360);
+    secNum = floor(mod(theta360 + 22.5, 360) / 45) + 1; % 1-8: E,NE,N,NW,W,SW,S,SE
     ring = nRings;                                       % default: outermost band
     for i = 1:nRings
-        if ecc <= ECC_EDGES(i+1);  ring = i;  break;  end
+        if rho <= RHO_EDGES(i+1);  ring = i;  break;  end
     end
     sIdx = (secNum - 1) * nRings + ring;
 end
