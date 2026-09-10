@@ -42,6 +42,8 @@ DataType = 'export_data';     % editable constant
 %Folder = '2026-07-17';
 Folder = '2026-09-09';
 
+SkipEyeSegment = true; %Skip eye processing
+SkipPhotodiode = true; %Skip photo-diode processing
 
 %% -------------------------------------------------------------------------
 %% 3. PREPROCESSING CONFIGURATION -- one struct per block
@@ -141,14 +143,18 @@ comments_path = findExportFile(all_files, main_path, 'trials_matlab');
 %named this '<stem>_analog_matlab.mat' (all channels of the ns2); it is now
 %'<stem>_eye_matlab.mat' (EyeChannels only). Fall back to the old name so
 %already-exported sessions keep working without re-running the loader.
-eye_path      = findExportFile(all_files, main_path, 'eye_matlab');
-if isempty(eye_path)
-    eye_path  = findExportFile(all_files, main_path, 'analog_matlab');
+if ~SkipEyeSegment
+
+    eye_path      = findExportFile(all_files, main_path, 'eye_matlab');
+    if isempty(eye_path)
+        eye_path  = findExportFile(all_files, main_path, 'analog_matlab');
+    end
 end
 
+if ~SkipPhotodiode
 %Search for photodiode file
-photodiode_path = findExportFile(all_files, main_path, 'photodiode_matlab');
-
+    photodiode_path = findExportFile(all_files, main_path, 'photodiode_matlab');
+end
 %Search for online spike file. 'spikes' alone would also catch the waveform
 %file, so it has to be excluded explicitly.
 spike_path    = findExportFile(all_files, main_path, 'spikes', 'spikes_waveform');
@@ -202,17 +208,20 @@ BehaviorSummary = PrepareBehavior(comments_data, cfg.Behavior, main_path);
 % of staying resident across them.
 rtWillCompute = needFullFile(cfg.RT, main_path, 'RT', {'.mat', '.csv'});
 reportPreprocessStage(2, NPrepSteps, 'Eye calibration');
-[caled_eyes, eye_data] = PrepareEyes(eye_path, comments_data, cfg.Eye, ...
+if ~SkipEyeSegment
+    [caled_eyes, eye_data] = PrepareEyes(eye_path, comments_data, cfg.Eye, ...
                                      main_path, rtWillCompute);
 
 %Add RT to saccade tasks.
 reportPreprocessStage(3, NPrepSteps, 'RT');
 RT = PrepareRT(caled_eyes, comments_data, cfg.RT, main_path);
+end
 
-reportPreprocessStage(4, NPrepSteps, 'Photodiode');
-[PDTiming, photodiode_data] = PreparePhotodiode(photodiode_path, comments_data, ...
+if ~SkipPhotodiode
+    reportPreprocessStage(4, NPrepSteps, 'Photodiode');
+    [PDTiming, photodiode_data] = PreparePhotodiode(photodiode_path, comments_data, ...
                                                 cfg.Photodiode, main_path);
-
+end
 reportPreprocessStage(5, NPrepSteps, 'Spikes');
 [SpikeSummary, spike_data, spikewaveform_data] = PrepareSpikes(spike_path, ...
                               waveform_path, comments_data, cfg.Spike, main_path);
@@ -239,7 +248,11 @@ end
 % Field names must match the protocol contract: the per-task analyzers
 % (RFPlot, TimeDiscriminationBehavior, ...) read the trials table as data.comments.
 % extend the comments table by adding RT table.
-extended_comments = extendComments(comments_data,RT,PDTiming);
+if ~SkipPhotodiode & ~SkipEyeSegment
+    extended_comments = extendComments(comments_data,RT,PDTiming);
+else
+    extended_comments = comments_data;
+end
 data_ana = struct('comments',extended_comments,'eyes',[],'spike',filtered_spike_data);
 
 
