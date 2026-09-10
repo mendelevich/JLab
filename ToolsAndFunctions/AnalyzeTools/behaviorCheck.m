@@ -257,7 +257,7 @@ function SC = computeSaccadeConditions(cd)
     rowspec = struct('name', {}, 'rows', {}, 'ecc', {});
     for g = 1:numel(grps)
         r   = grps(g).rows;
-        ecc = round(cd.Target_1_eccentricity(r), 1);
+        ecc = round(cd.Target_1_rho(r), 1);
         for e = unique(ecc(~isnan(ecc)))'
             rowspec(end+1) = struct('name', grps(g).name, ...
                 'rows', r(ecc == e), 'ecc', e);  %#ok<AGROW>
@@ -268,12 +268,12 @@ function SC = computeSaccadeConditions(cd)
 
     % One angle axis shared by every row: each row builds its own categories
     % otherwise, and the same angle then lands at a different x per row.
-    all_ang   = round(cd.Target_1_angle(vertcat(rowspec.rows)), 1);
+    all_ang   = round(cd.Target_1_theta(vertcat(rowspec.rows)), 1);
     SC.angles = unique(all_ang(~isnan(all_ang)));
 
     SC.rows = struct('name', {}, 'ecc', {}, 'nCor', {});
     for i = 1:numel(rowspec)
-        ang  = round(cd.Target_1_angle(rowspec(i).rows), 1);
+        ang  = round(cd.Target_1_theta(rowspec(i).rows), 1);
         outc = cd.Trialoutcome(rowspec(i).rows);
         % Successful trials only; a saccade task has no wrong trials. Angles the
         % row never ran count 0 and leave an empty column.
@@ -477,12 +477,12 @@ end
 function s = saccadeConditionSummary(cd, rows)
 % nTrials / sparsest (angle, eccentricity) condition over the given (correct) rows.
     s = struct('nTrials', numel(rows), 'minRep', NaN, 'minRepCond', '');
-    if isempty(rows) || ~all(ismember({'Target_1_angle', 'Target_1_eccentricity'}, ...
+    if isempty(rows) || ~all(ismember({'Target_1_theta', 'Target_1_rho'}, ...
                                        cd.Properties.VariableNames))
         return
     end
-    ang = round(cd.Target_1_angle(rows), 1);
-    ecc = round(cd.Target_1_eccentricity(rows), 1);
+    ang = round(cd.Target_1_theta(rows), 1);
+    ecc = round(cd.Target_1_rho(rows), 1);
     ok  = ~isnan(ang) & ~isnan(ecc);
     if ~any(ok);  return;  end
     [uc, ~, id] = unique([ang(ok) ecc(ok)], 'rows');

@@ -422,7 +422,7 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
     end
 
     % ---------------- pure per-unit compute (no graphics) -----------------
-    % Groups trials by their (Target_1_angle, Target_1_eccentricity) condition
+    % Groups trials by their (Target_1_theta, Target_1_rho) condition
     % once, then does the RF-grid and spatial-PSTH math per condition/sector
     % instead of recomputing the shared grid cell / sector for every trial.
     function st = computeUnit(r, rfWin, psthWin, alignStr, doFit)
@@ -486,12 +486,12 @@ function rfsummary = RFPlot(data, cfg, plotFlag, savePath, reCompute)
         % when the two columns have very different ranges (angle ~360, ecc ~20) --
         % the same failure mode rounding had, just via a different mechanism.
         valid = ~isnan(xk) & ~isnan(yk) & ~isnan(mRelKt);
-        angRaw = cd.Target_1_angle;
-        eccRaw = cd.Target_1_eccentricity;
+        angRaw = cd.Target_1_theta;
+        eccRaw = cd.Target_1_rho;
         [cond, ~, condId] = uniquetol([angRaw(valid), eccRaw(valid)], 1e-6, ...
             'ByRows', true, 'DataScale', 1);
         nCond = size(cond, 1);
-        % Target_1_angle is already in the convention getSectorIdx wants (0 = +x,
+        % Target_1_theta is already in the convention getSectorIdx wants (0 = +x,
         % counter-clockwise, [0, 360)) -- it is stored exactly as the task's
         % 'position polar' comment sends it. This used to be
         % 'mod(90 - cond(:,1), 360)' to undo the old compass frame; applying that

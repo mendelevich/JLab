@@ -183,10 +183,29 @@ This applies to standalone calls only. `loadSession` always passes
 ### Checking the comments to debug parsing
 
 When the task's comment-string format changes, parsed events can land in
-`trials.undefined` instead of the expected fields. `parseEvents` now always
-prints a report naming them, so watch for a non-zero `undefined` count and the
-`undefined events:` list it prints under it. To see the raw strings, load just
-the comments
+`trials.undefined` instead of the expected fields. `parseEvents` always prints a
+report, so watch the `undefined / duplicates / malformed` counts and the three
+lists printed under them. Each list gives the *distinct* strings, how many times
+each occurred (`x3`), and the trials it occurred in as `[S<session>T<trial>, ...]`,
+capped at 8 trials plus a `+N more`:
+
+```
+parseEvents: 109432 comments -> 5012 trials, 1 session(s); 604 distinct event bodies
+  undefined 12, duplicates 4, malformed 5
+  undefined events (add a key for these, or they stay dropped):
+    x12   Target 1 color [-0.8, -0.8, -0.8]              [S1T1, S1T2, ..., +4 more]
+  duplicated events (first write kept):
+    x4    Choicetime                                     [S1T2, S1T3, S1T5]
+  malformed comments (neither "Experiment" nor "Trial N:", skipped; shown against the trial that was open):
+    x5    <the raw comment text>                         [S1T7, S1T8]
+```
+
+The three mean different things: **undefined** matched no key (add one, or it
+stays dropped); **duplicates** were written more than once in a trial (the first
+write is kept, the rest listed); **malformed** is neither an `Experiment` line
+nor a `Trial N:` line, so it has no trial of its own and is dropped outright --
+it is listed against the trial that was open when it arrived. To see the raw
+strings, load just the comments
 (way 3 above) and pair each raw, **unparsed** comment with its timestamp using
 the static helper `BlackrockLoader.commentsWithTime`, so you can eyeball exactly
 what the recording contains:
@@ -315,6 +334,14 @@ experiment sessions, so the file has one `Session N:` header per session
 followed by its `field: value` lines and a blank line. Numeric values are
 written with `mat2str`, everything else as a string.
 
+`start` / `end` are the session's own timestamps in seconds, `end_by` the reason
+it ended. `pause_times` / `resume_times` are the `Experiment paused` /
+`Experiment resumed` markers, in seconds, in file order — lists, since a session
+can pause any number of times, and `[]` when it never did. They are **not
+necessarily the same length**: a session paused and then ended without resuming
+has one more pause than resume. Trial numbers and `Session` do not restart at a
+pause, so this is the only record of the gap.
+
 **`*_trials_matlab.csv`** — the `trials` struct flattened with `struct2table`,
 one row per trial. Key column conventions:
 
@@ -326,12 +353,15 @@ one row per trial. Key column conventions:
 - 2-element vector fields (e.g. target positions) are split into `<field>_x` /
   `<field>_y` columns; the original combined column is dropped.
 - The `undefined` and `duplicates` bookkeeping fields are dropped before export.
-- Derived features from parsing are included (polar target angle/eccentricity,
+- Derived features from parsing are included (polar target theta/rho,
   `Stimulus_direction`, `Choose_target`, `Choose_leftright`).
-- `Target_*_angle` / `Target_*_eccentricity` are taken from the task's
+- `Target_*_theta` / `Target_*_rho` are taken from the task's
   `Target N position polar (theta ..., rho ...) deg` comment when it sends one,
   and back-computed from the cartesian position otherwise. Both paths store the
   **task's own convention**: `0` = +x (right), counter-clockwise, `[0, 360)`.
+  The names match the comment's own words; they were `Target_*_angle` /
+  `Target_*_eccentricity` before 2026-09-10, so an older export has the old
+  headers and needs re-exporting.
   Preferring the sent values matters because the cartesian comments are printed
   to two decimals, so a back-computed rho is wrong in the fourth digit
   (`(4.95, 4.95)` gives 6.99985 where the task sent exactly 7.00).
@@ -339,8 +369,16 @@ one row per trial. Key column conventions:
   > `(-180, 180]`). Angles are plain numbers, so an old export and a new one
   > cannot be told apart by inspection — **re-export every session** you intend
   > to compare, and re-run the analyzer with the `ReCompute*` flags on so cached
-  > products are rebuilt. Use `BlackrockLoader.hemifield(angle)` for left/right;
-  > the old `angle >= 0` test is true for every angle in this range.
+  > products are rebuilt. Use `BlackrockLoader.hemifield(theta)` for left/right;
+  > the old `theta >= 0` test is true for every theta in this range.
+- `Target_*_base_theta` / `Target_*_base_rho` are the **pre-jitter** position the
+  task sends separately (`Requested target N base position polar`), in the same
+  convention and units. Unlike `Target_*_theta` these are never back-computed, so
+  a task that sends no base comment leaves them `NaN`.
+- `Requested_jitter_theta` / `Requested_jitter_rho` are the full width of the
+  jitter window applied to that base position, and `Requested_jitter_*_step` the
+  grid it is quantised to (all in deg). So the actual position sits within
+  ±`jitter/2` of the base, on a multiple of the step.
 
 **`*_eye_matlab.mat`** — one variable `eye`, a struct that lines up 1:1
 with the CSV rows (trial dimension is index-aligned with `trials`):
@@ -440,10 +478,19 @@ every trial of that block — and `Session` is a join key downstream
 (`SpikeTrialAlignmentCheck` pairs comments to spikes on `(Session,
 Trial_number)`). A session with no metadata block gets a blank `experiment`
 entry so `experiment(Session)` is always addressable. Derived features (polar
-target angle/eccentricity, `Stimulus_direction`, `Choose_target`,
+target theta/rho, `Stimulus_direction`, `Choose_target`,
 `Choose_leftright`) are added at the end; the polar pair prefers the task's own
 `position polar` comment over the cartesian back-computation, and is stored in
 the task's `[0, 360)` convention (see the CSV notes above).
+
+Four `Experiment` markers are recognised: `Experiment start:` and
+`Experiment end:`, which require the colon and carry a metadata token after it,
+and `Experiment paused` / `Experiment resumed`, which carry no token and are
+written without a colon (their timestamps go to `pause_times` / `resume_times`
+on that session's `experiment` entry). Anything else beginning with
+`Experiment ` — `Experiment ended by ...`, say — matches neither those nor the
+`Trial N:` form, so it has no trial to attach to and is dropped and reported as
+malformed.
 
 Parsing is set-oriented rather than per-comment: the whole comment matrix is
 tokenised at once, trial and session indices come from `cumsum`, and each
@@ -528,11 +575,12 @@ mechanism, so pick by how the comment reads:
 | map                 | comment text                      | what is stored                        |
 | ------------------- | --------------------------------- | ------------------------------------- |
 | `TimeEvents`        | `Widget engaged` (bare name)      | the comment's timestamp               |
-| `SegmentEvents`     | `Widget color blue`               | the text after the **last** space     |
+| `SegmentEvents`     | `Widget color blue`               | the text after the **key**            |
 | `InformationEvents` | `Widget position (1.5, -2.5) deg` | a `[x y]` pair                        |
 | `InformationEvents` | `Reward start (250.0ms)`          | the timestamp **and** `Reward_amount` |
 | `InformationEvents` | `Requested widget delay 250 ms`   | a scalar (`None`/`none` → `NaN`)      |
 | `InformationEvents` | `Widget size 4.00 deg`            | a scalar                              |
+| `PolarEvents`       | `Widget position polar (theta 1.0, rho 2.0) deg` | two scalars (see below) |
 
 Everything downstream is derived from those two edits, so do not declare it
 anywhere: whether the exported column is text or numeric, the `_x`/`_y` split of
@@ -541,9 +589,15 @@ capture into `trials.duplicates`.
 
 Two things to watch:
 
-- **Keys may not be substrings of one another within the same map.** Lookup is
-  exact-match, so adding `'Fixation point'` next to `'Fixation point on'` throws
-  `BlackrockLoader:EventMaps:SubstringKey` when the loader is constructed.
+- **`SegmentEvents` keys may not be substrings of one another.** That map alone
+  is matched in key order, first match wins, so an overlapping pair would bind by
+  however the keys happen to sort. Adding `'Widget color'` next to
+  `'Widget color scheme'` throws `BlackrockLoader:EventMaps:SubstringKey` when
+  the loader is constructed. The other maps resolve by exact match and allow
+  overlap — `'Requested jitter theta'` and `'Requested jitter theta step'` are
+  both `InformationEvents` keys. There a name that matches no key exactly and is
+  ambiguous between several lands in `trials.undefined`, where the parse report
+  prints it; it never binds to the wrong field.
 - **Every mapped field must exist in the template**, or construction throws
   `BlackrockLoader:EventMaps:UnknownField`. This is the one mistake the parse
   report cannot show you: a field nobody declared resolves to index 0, the write
@@ -551,12 +605,12 @@ Two things to watch:
   So forgetting edit 2 above is an error at construction, not silent data loss.
 - **A `PolarEvents` value is a *pair* of field names, not one.** One such
   comment carries two numbers, so the value is
-  `{'Target_1_angle', 'Target_1_eccentricity'}` — theta to the first, rho to the
-  second. It is a separate map from `InformationEvents` because
-  `'Target 1 position'` is a substring of `'Target 1 position polar'`, which the
-  substring rule below forbids inside one map. Its theta is stored in the math
-  convention the task sends (0 = +x, counter-clockwise) and rotated into the
-  stored compass frame by `addDerivedTrialFeatures`.
+  `{'Target_1_theta', 'Target_1_rho'}` — theta to the first, rho to the second.
+  It is a separate map from `InformationEvents` because no `InformationEvents`
+  branch can write two fields from one body, not because of any key overlap.
+  Both values are stored exactly as the task sends them (0 = +x,
+  counter-clockwise, `[0, 360)`); `addDerivedTrialFeatures` only fills in the
+  trials where no polar comment arrived.
 - **`DashEvents` and `OutcomeEvents` are plain lists, not field maps.** Their
   target fields are hardcoded (`End`/`Trialoutcome` when the name contains
   `End`, `Choosen_choice` when it contains `choice`, `Choiceoutcome` for

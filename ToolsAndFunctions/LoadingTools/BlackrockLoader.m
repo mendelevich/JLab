@@ -712,22 +712,16 @@ classdef BlackrockLoader < handle
                 numel(K.txt), K.nTrials, max([Session; 0]), numel(ub));
             fprintf('  undefined %d, duplicates %d, malformed %d\n', ...
                 numel(undAll), numel(dupAll), sum(K.isMalformed));
-            if ~isempty(undAll)
-                fprintf('  undefined events (add a key for these, or they stay dropped):\n');
-                fprintf('    %s\n', unique(undAll));
-            end
-            if ~isempty(dupAll)
-                fprintf('  duplicated events (first write kept):\n');
-                fprintf('    %s\n', unique(dupAll));
-            end
-            if any(K.isMalformed)
-                % Neither an Experiment line nor a "Trial N:" line, so there is
-                % no trial to attach it to. The per-comment parser died here.
-                warning('BlackrockLoader:parseEvents:MalformedComment', ...
-                    ['%d comment(s) matched neither the Experiment nor the "Trial N:" ' ...
-                     'form and were skipped. First: "%s"'], ...
-                    sum(K.isMalformed), K.txt(find(K.isMalformed, 1)));
-            end
+            % Each block lists the DISTINCT strings with a count and the trials
+            % they came from. A count on its own is not actionable: fixing any
+            % of the three means finding the offending comment in the file.
+            BlackrockLoader.reportTrialLabels( ...
+                'undefined events (add a key for these, or they stay dropped)', ...
+                undCells, K.tnumPerTrial, Session);
+            BlackrockLoader.reportTrialLabels( ...
+                'duplicated events (first write kept)', ...
+                dupCells, K.tnumPerTrial, Session);
+            BlackrockLoader.reportMalformedComments(K, Session);
 
             trials = BlackrockLoader.addDerivedTrialFeatures(trials);
         end
@@ -2295,6 +2289,21 @@ classdef BlackrockLoader < handle
             % fails and the session end timestamp would be lost.
             ei  = find(startsWith(K.txt, "Experiment "));
             tok = BlackrockLoader.regexpTokensOnce(K.txt(ei), '^Experiment (start|end):\s*(.*)$');
+
+            % 'paused'/'resumed' are the same kind of line but carry no metadata
+            % token and are written WITHOUT the colon, so they need their own
+            % pattern rather than a fourth branch of the one above -- widening
+            % that one to ':?' would also let "Experiment ended by ..." through
+            % as an end marker with token "ed by ...". Matched second and only
+            % where the first found nothing, so start/end keep their exact
+            % meaning. '\>' is MATLAB's end-of-word: '\b' is NOT a word boundary
+            % here (it is a backspace), and silently fails the whole match.
+            % An "Experiment " line matching neither pattern stays malformed,
+            % which is what surfaces it in the parse report.
+            tokPause = BlackrockLoader.regexpTokensOnce(K.txt(ei), ...
+                '^Experiment (paused|resumed)\>:?\s*(.*)$');
+            noMain   = cellfun(@isempty, tok);
+            tok(noMain) = tokPause(noMain);
             % cellfun('isempty', ...) reports FALSE for an empty string element
             % -- the fast-string form only understands cell/char. The function
             % handle is required here, not a style preference.
@@ -2403,13 +2412,27 @@ classdef BlackrockLoader < handle
         end
 
         function validateEventMaps(maps, trialTemplate, expTemplate)
-        % Assert the invariant that lets exact-match lookup stand in for the
-        % per-comment parser's substring reverse lookup, contains(keys, name).
-        % The two agree only while no key in a map is a proper substring of
-        % another key in the SAME map. Adding e.g. 'Fixation point' alongside
-        % 'Fixation point on' would silently bind events to the wrong field, so
-        % fail here instead.
-            names = {'TimeEvents', 'InformationEvents', 'SegmentEvents', 'PolarEvents'};
+        % No key in an ORDER-DEPENDENT map may be a substring of another key in
+        % that same map. Only SegmentEvents is order-dependent: classifyEventBodies
+        % kind 3 walks its keys and takes the first whose key the body contains,
+        % so two overlapping keys would bind by keys() sort order, silently and
+        % differently depending on how they happen to sort.
+        %
+        % The other three maps resolve by exact match and do not need the rule:
+        %   TimeEvents         ismember(body, keys)     exact on the whole body
+        %   PolarEvents        ismember(name, keys)     exact, no fallback
+        %   InformationEvents  matchIndex: exact first, then a UNIQUE substring
+        % With exact-match-first an overlapping pair cannot mis-bind. A parsed
+        % name that IS a key resolves to that key; a name that is a substring of
+        % two or more keys is ambiguous and returns 0, which routes the body to
+        % trials.undefined where the parse report prints it. Never the wrong
+        % field, only an unparsed one. This is what lets 'Requested jitter theta'
+        % and 'Requested jitter theta step' coexist in InformationEvents.
+        %
+        % (The rule was once applied to all four maps, guarding the per-comment
+        % parser's contains(keys, name) reverse lookup. That parser is commented
+        % out and stale, and its lookup is what actually needed the invariant.)
+            names = {'SegmentEvents'};
             for n = 1:numel(names)
                 kk = string(keys(maps.(names{n})));
                 for a = 1:numel(kk)
@@ -2417,8 +2440,8 @@ classdef BlackrockLoader < handle
                     inside(a) = false;
                     if any(inside)
                         error('BlackrockLoader:EventMaps:SubstringKey', ...
-                            ['%s: key "%s" is a substring of "%s". Event lookup is ' ...
-                             'exact-match and cannot disambiguate these.'], ...
+                            ['%s: key "%s" is a substring of "%s". That map is matched ' ...
+                             'in key order and cannot disambiguate these.'], ...
                             names{n}, kk(a), kk(find(inside, 1)));
                     end
                 end
@@ -2616,8 +2639,9 @@ classdef BlackrockLoader < handle
             %
             % Loops over the KEYS (six of them), not the bodies, so the
             % set-oriented shape of this function is unchanged. At most one key
-            % can match a body: validateEventMaps guarantees no key in a map is
-            % a substring of another, so match order is irrelevant.
+            % can match a body: validateEventMaps guarantees no SegmentEvents key
+            % is a substring of another -- this first-match-wins loop is the one
+            % place that rule is load bearing -- so match order is irrelevant.
             sel = find(kind == 3);
             if ~isempty(sel)
                 b       = ub(sel);
@@ -2899,6 +2923,75 @@ classdef BlackrockLoader < handle
             C(hit) = parts;
         end
 
+        function reportTrialLabels(heading, cellsPerTrial, tnumPerTrial, session)
+        % Print one line per DISTINCT label: how many times it occurred, and the
+        % trials it occurred in. cellsPerTrial is the nTrials x 1 cell of string
+        % columns groupLabelsByTrial produces, so the trial is the cell index --
+        % nothing has to be re-derived from the comments to attribute a label.
+            n = cellfun(@numel, cellsPerTrial);
+            if ~any(n)
+                return
+            end
+            labels    = vertcat(cellsPerTrial{:});
+            trialRows = repelem((1:numel(cellsPerTrial))', n(:), 1);
+            [u, ~, g] = unique(labels);
+            cnt       = accumarray(g, 1);
+            fprintf('  %s:\n', heading);
+            for k = 1:numel(u)
+                rows = unique(trialRows(g == k), 'stable');
+                fprintf('    x%-4d %-46s %s\n', cnt(k), u(k), ...
+                    BlackrockLoader.formatTrialList(session(rows), tnumPerTrial(rows)));
+            end
+        end
+
+        function reportMalformedComments(K, Session)
+        % Comments that are neither an Experiment line nor a "Trial N:" line, so
+        % there is no trial to attach them to (the per-comment parser died
+        % here). They are still locatable: report each distinct text against the
+        % trial that was open when it arrived, which is what cummax over
+        % trialRowOfComment gives -- that column is 0 on every non-trial line.
+            if ~any(K.isMalformed)
+                return
+            end
+            idx       = find(K.isMalformed);
+            openRow   = cummax(K.trialRowOfComment);
+            [u, ~, g] = unique(K.txt(idx));
+            cnt       = accumarray(g, 1);
+            fprintf(['  malformed comments (neither "Experiment" nor "Trial N:", ' ...
+                     'skipped; shown against the trial that was open):\n']);
+            for k = 1:numel(u)
+                rows = unique(openRow(idx(g == k)), 'stable');
+                rows = rows(rows > 0);
+                fprintf('    x%-4d %-46s %s\n', cnt(k), u(k), ...
+                    BlackrockLoader.formatTrialList(Session(rows), K.tnumPerTrial(rows)));
+            end
+            % Warned as well as listed: this is the one class that is dropped
+            % outright, so it has to survive a scrolled-past log.
+            warning('BlackrockLoader:parseEvents:MalformedComment', ...
+                ['%d comment(s) matched neither the Experiment nor the "Trial N:" ' ...
+                 'form and were skipped (%d distinct, listed above).'], ...
+                numel(idx), numel(u));
+        end
+
+        function s = formatTrialList(session, tnum, maxShow)
+        % "[S1T12, S1T40, +3 more]". Bounded, because one unknown comment shape
+        % can appear in every trial of a session and the point of the line is
+        % the shape, not the full trial list.
+            if nargin < 3
+                maxShow = 8;
+            end
+            if isempty(tnum)
+                s = '[before the first trial]';
+                return
+            end
+            k     = min(numel(tnum), maxShow);
+            s     = "[" + strjoin(compose("S%dT%d", session(1:k), tnum(1:k)), ", ");
+            if numel(tnum) > k
+                s = s + sprintf(", +%d more", numel(tnum) - k);
+            end
+            s = char(s + "]");
+        end
+
         function trials = assembleTrialStruct(cols, dupCells, undCells, trialTemplate)
         % Turn the per-field columns into the struct array the rest of the
         % loader expects, preserving each field's runtime type: plain double,
@@ -2962,6 +3055,19 @@ classdef BlackrockLoader < handle
                 if sIdx < 1
                     % Metadata before the first git-commit start has nowhere to
                     % go, exactly as before.
+                    continue
+                end
+
+                if marker == "paused" || marker == "resumed"
+                    % Timing only -- the marker's own timestamp, appended in
+                    % file order. These lines carry no metadata token, so they
+                    % skip the key chain below rather than falling through to
+                    % its numeric catch-all.
+                    if marker == "paused"
+                        expByMarker(sIdx).pause_times(end+1,1)  = EventTime(ci);
+                    else
+                        expByMarker(sIdx).resume_times(end+1,1) = EventTime(ci);
+                    end
                     continue
                 end
 
@@ -3041,9 +3147,13 @@ classdef BlackrockLoader < handle
                 else
                     % Two markers inside one reset-session: keep the opening
                     % block and take the closing one's end/end_by. Only reachable
-                    % when sessionLabelsFromResets already warned.
+                    % when sessionLabelsFromResets already warned. Pause/resume
+                    % are concatenated rather than replaced -- both blocks'
+                    % markers happened inside this one session.
                     experiment(s).end    = expByMarker(m).end;
                     experiment(s).end_by = expByMarker(m).end_by;
+                    experiment(s).pause_times  = [experiment(s).pause_times;  expByMarker(m).pause_times];
+                    experiment(s).resume_times = [experiment(s).resume_times; expByMarker(m).resume_times];
                 end
             end
         end
@@ -3125,29 +3235,29 @@ classdef BlackrockLoader < handle
             % already hold whatever a 'Target N position polar' comment sent (NaN
             % where the task sent none); targetPolar keeps those and fills the
             % rest from the cartesian position, so both paths share one frame.
-            [Target_1_angle, Target_1_ecc] = BlackrockLoader.targetPolar( ...
+            [Target_1_theta, Target_1_rho_vals] = BlackrockLoader.targetPolar( ...
                 vertcat(trials.Target_1_position), ...
-                vertcat(trials.Target_1_angle), vertcat(trials.Target_1_eccentricity));
+                vertcat(trials.Target_1_theta), vertcat(trials.Target_1_rho));
 
-            [Target_2_angle, Target_2_ecc] = BlackrockLoader.targetPolar( ...
+            [Target_2_theta, Target_2_rho_vals] = BlackrockLoader.targetPolar( ...
                 vertcat(trials.Target_2_position), ...
-                vertcat(trials.Target_2_angle), vertcat(trials.Target_2_eccentricity));
+                vertcat(trials.Target_2_theta), vertcat(trials.Target_2_rho));
 
-            stimulus_dir = BlackrockLoader.hemifield(Target_1_angle);
-            stimulus_dir(isnan(Target_1_angle)) = NaN;
+            stimulus_dir = BlackrockLoader.hemifield(Target_1_theta);
+            stimulus_dir(isnan(Target_1_theta)) = NaN;
 
             %2. Transform choice into target1/target2 and left/right
             ChooseTarget = cellfun(@(s) str2double(s(end)), {trials.Choosen_choice});
             ChooseLeftRight = ChooseTarget;
-            ChooseLeftRight(ChooseTarget==1) = BlackrockLoader.hemifield(Target_1_angle(ChooseTarget==1));
-            ChooseLeftRight(ChooseTarget==2) = BlackrockLoader.hemifield(Target_2_angle(ChooseTarget==2));
+            ChooseLeftRight(ChooseTarget==1) = BlackrockLoader.hemifield(Target_1_theta(ChooseTarget==1));
+            ChooseLeftRight(ChooseTarget==2) = BlackrockLoader.hemifield(Target_2_theta(ChooseTarget==2));
 
             %3. Add these features back
-            Target1Angle_cell = num2cell(Target_1_angle);
-            [trials.Target_1_angle] = deal(Target1Angle_cell{:});
+            Target_1_theta_cell = num2cell(Target_1_theta);
+            [trials.Target_1_theta] = deal(Target_1_theta_cell{:});
 
-            Target2Angle_cell = num2cell(Target_2_angle);
-            [trials.Target_2_angle] = deal(Target2Angle_cell{:});
+            Target_2_theta_cell = num2cell(Target_2_theta);
+            [trials.Target_2_theta] = deal(Target_2_theta_cell{:});
 
             stimulus_dir_cell = num2cell(stimulus_dir);
             [trials.Stimulus_direction] = deal(stimulus_dir_cell{:});
@@ -3157,16 +3267,16 @@ classdef BlackrockLoader < handle
             ChooseLeftRight_cell = num2cell(ChooseLeftRight);
             [trials.Choose_leftright] = deal(ChooseLeftRight_cell{:});
 
-            Target_1_ecc_cell = num2cell(Target_1_ecc);
-            [trials.Target_1_eccentricity] = deal(Target_1_ecc_cell{:});
+            Target_1_rho_cell = num2cell(Target_1_rho_vals);
+            [trials.Target_1_rho] = deal(Target_1_rho_cell{:});
 
-            Target_2_ecc_cell = num2cell(Target_2_ecc);
-            [trials.Target_2_eccentricity] = deal(Target_2_ecc_cell{:});
+            Target_2_rho_cell = num2cell(Target_2_rho_vals);
+            [trials.Target_2_rho] = deal(Target_2_rho_cell{:});
         end
 
-        function [angleDeg, ecc] = targetPolar(xy, sentTheta, sentRho)
-        % Polar angle and eccentricity for one target, preferring the values the
-        % task sent over ones back-computed from the printed cartesian position.
+        function [thetaDeg, rho] = targetPolar(xy, sentTheta, sentRho)
+        % Polar theta and rho for one target, preferring the values the task sent
+        % over ones back-computed from the printed cartesian position.
         %
         % Pure. xy is Nx2 cartesian position pairs; sentTheta/sentRho are the raw
         % 'position polar' comment values, NaN wherever no such comment arrived.
@@ -3185,16 +3295,16 @@ classdef BlackrockLoader < handle
         % '(4.95, 4.95)' gives 6.99985 where the task sent exactly 7.00.
             have = ~isnan(sentTheta) & ~isnan(sentRho);
 
-            [th, ecc]      = cart2pol(xy(:,1), xy(:,2));
-            angleDeg       = rad2deg(th);      % atan2 range, (-180, 180]
-            angleDeg(have) = sentTheta(have);
-            ecc(have)      = sentRho(have);
+            [th, rho]      = cart2pol(xy(:,1), xy(:,2));
+            thetaDeg       = rad2deg(th);      % atan2 range, (-180, 180]
+            thetaDeg(have) = sentTheta(have);
+            rho(have)      = sentRho(have);
 
-            angleDeg = mod(angleDeg, 360);     % [0, 360), as the task sends it
+            thetaDeg = mod(thetaDeg, 360);     % [0, 360), as the task sends it
         end
 
-        function d = hemifield(angleDeg)
-        % +1 = right hemifield, -1 = left, for an angle in the stored convention
+        function d = hemifield(thetaDeg)
+        % +1 = right hemifield, -1 = left, for a theta in the stored convention
         % (0 = +x, counter-clockwise, [0, 360)).
         %
         % Right is [0, 90] u (270, 360). That selects exactly the trials the old
@@ -3206,7 +3316,7 @@ classdef BlackrockLoader < handle
         % NaN falls through to -1, which is what '(NaN >= 0)*2 - 1' also returned:
         % Stimulus_direction re-NaNs those itself and Choose_leftright never did,
         % so that asymmetry is preserved here rather than quietly changed.
-            d = ((angleDeg <= 90) | (angleDeg > 270)) * 2 - 1;
+            d = ((thetaDeg <= 90) | (thetaDeg > 270)) * 2 - 1;
         end
 
         function exp_template = defaultExpTemplate()
@@ -3227,6 +3337,13 @@ classdef BlackrockLoader < handle
             exp_template.start                        = NaN;          % in s
             exp_template.end                          = NaN;          % in s
             exp_template.end_by                       = NaN;          % reason the session ended
+            % A session can pause and resume any number of times, so these are
+            % growing lists, not scalars, and they are [] rather than NaN so an
+            % un-paused session exports as '[]' instead of a fake single value.
+            % Not necessarily the same length: a session paused and then ended
+            % without resuming has one more pause than resume.
+            exp_template.pause_times                  = [];           % in s
+            exp_template.resume_times                 = [];           % in s
         end
 
         function trial = defaultTrialTemplate()
@@ -3300,16 +3417,32 @@ classdef BlackrockLoader < handle
             trial.Requested_time_offset_max      = NaN; %in ms
             trial.Requested_time_offset_active   = NaN; %string, space-separated active offsets (ms)
 
+            % Jitter the task applies to the target's base polar position, and
+            % the grid it quantises that jitter to. 09-10-2026
+            trial.Requested_jitter_theta      = NaN; % in deg
+            trial.Requested_jitter_theta_step = NaN; % in deg
+            trial.Requested_jitter_rho        = NaN; % in deg
+            trial.Requested_jitter_rho_step   = NaN; % in deg
+
             % Target polar position, in the task's own convention: 0 = +x
             % (right), counter-clockwise, [0, 360). Written directly by a
             % 'position polar' comment when the task sends one, otherwise
             % back-computed from the cartesian position by
             % addDerivedTrialFeatures. Use BlackrockLoader.hemifield for
             % left/right -- a sign test does not work in this range.
-            trial.Target_1_angle        = NaN; % in deg
-            trial.Target_2_angle        = NaN; % in deg
-            trial.Target_1_eccentricity = NaN; % in deg
-            trial.Target_2_eccentricity = NaN; % in deg
+            trial.Target_1_theta        = NaN; % in deg
+            trial.Target_2_theta        = NaN; % in deg
+            trial.Target_1_rho          = NaN; % in deg
+            trial.Target_2_rho          = NaN; % in deg
+
+            % The pre-jitter base position Requested_jitter_* is applied to, same
+            % convention and units as the fields above. Sent by the task in its
+            % own comment, so unlike Target_*_theta these are never
+            % back-computed -- a trial with no base comment keeps NaN. 09-10-2026
+            trial.Target_1_base_theta = NaN; % in deg
+            trial.Target_2_base_theta = NaN; % in deg
+            trial.Target_1_base_rho   = NaN; % in deg
+            trial.Target_2_base_rho   = NaN; % in deg
 
             trial.undefined = strings(0,1);%Duplicates or undefind events
             trial.duplicates = strings(0,1);%Duplicates or undefind events
@@ -3348,12 +3481,22 @@ classdef BlackrockLoader < handle
             % theta lands in the *_angle field exactly as the task sends it
             % (0 = +x, counter-clockwise, [0, 360)); addDerivedTrialFeatures only
             % fills in the trials where no polar comment arrived.
-            % Kept out of InformationEvents because 'Target 1 position' is a
-            % substring of 'Target 1 position polar', which validateEventMaps
-            % forbids within a single map.
-            maps.PolarEvents = containers.Map( {'Target 1 position polar','Target 2 position polar'},...
-                {{'Target_1_angle','Target_1_eccentricity'}, ...
-                 {'Target_2_angle','Target_2_eccentricity'}});
+            % A separate map because the parse shape differs, not because of the
+            % 'Target 1 position' / 'Target 1 position polar' overlap: one comment
+            % carries two numbers, which no InformationEvents branch can express.
+            % kind 7 is assigned last so it overrides the kind 2 those bodies
+            % also match.
+            % 'Requested target N base position polar' is the SAME shape, so it
+            % belongs here too. It does not collide with 'Target N position
+            % polar': contains() is case-sensitive, and neither key contains the
+            % other ('target' vs 'Target', with 'base ' in between).
+            maps.PolarEvents = containers.Map( ...
+                {'Target 1 position polar','Target 2 position polar', ...
+                 'Requested target 1 base position polar','Requested target 2 base position polar'},...
+                {{'Target_1_theta','Target_1_rho'}, ...
+                 {'Target_2_theta','Target_2_rho'}, ...
+                 {'Target_1_base_theta','Target_1_base_rho'}, ...
+                 {'Target_2_base_theta','Target_2_base_rho'}});
 
             maps.InformationEvents = containers.Map( ...
                 {'Fixation position','Fixation size','Fixation acceptance window'...
@@ -3365,7 +3508,9 @@ classdef BlackrockLoader < handle
                    'Requested target 1 duration','Requested target 2 time offset',...
                    'Requested target 1 timeout','Requested penalty box duration',...
                    'Reward start','Requested target dim opacity','Requested target 1 visible duration',...
-                   'Requested feedback flash duration','Requested choice timeout','Requested target reach deadline'
+                   'Requested feedback flash duration','Requested choice timeout','Requested target reach deadline',...
+                   'Requested jitter theta','Requested jitter theta step',...
+                   'Requested jitter rho','Requested jitter rho step'
                    },...
                 {'Fixation_position','Fixation_size','Fixation_acceptance_window' ...
                 'Target_1_size','Target_1_acceptance_window','Requested_fixation_hold_time',...
@@ -3376,7 +3521,9 @@ classdef BlackrockLoader < handle
                 'Requested_target_1_duration','Requested_target_2_time_offset',...
                 'Requested_target_1_timeout','Requested_penalty_box_duration',...
                 'Reward_start','Requested_target_dim_opacity','Requested_target_1_visible_duration',...
-                'Requested_feedback_flash_duration','Requested_choice_timeout','Requested_target_reach_deadline'
+                'Requested_feedback_flash_duration','Requested_choice_timeout','Requested_target_reach_deadline',...
+                'Requested_jitter_theta','Requested_jitter_theta_step',...
+                'Requested_jitter_rho','Requested_jitter_rho_step'
                 });
 
             maps.DashEvents    = {'End','Correct choice','Wrong choice'};

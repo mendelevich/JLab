@@ -361,7 +361,7 @@
       "compute": "target_1_angle"
     },
     "br": {
-      "direct": "Target_1_angle"
+      "direct": "Target_1_theta"
     }
   },
   {
@@ -370,7 +370,7 @@
       "todo": "cage motion/timedelay: targets at 0.2/0.8*width, y=0.5*height, fixation center -> eccentricity = 0.3*screen_width px; needs screen width (not in CSV) + px->deg. touchdotRL: from xposRel/yposRel"
     },
     "br": {
-      "direct": "Target_1_eccentricity"
+      "direct": "Target_1_rho"
     }
   },
   {
@@ -448,7 +448,7 @@
       "compute": "target_2_angle"
     },
     "br": {
-      "direct": "Target_2_angle"
+      "direct": "Target_2_theta"
     }
   },
   {
@@ -461,7 +461,7 @@
       "na": true
     },
     "br": {
-      "direct": "Target_2_eccentricity"
+      "direct": "Target_2_rho"
     }
   },
   {
