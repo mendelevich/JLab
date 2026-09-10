@@ -242,7 +242,17 @@ product is verified present before use:
   that has headers but no comment packets.
 - **Eye, LFP, spikes, and photodiode are all soft.** A missing or unreadable
   file is recorded in a status string and that product is skipped — the folder
-  still succeeds. The prefixes (`NSP`/`HUB`/`Hub`), the `.ns2`/`.ns4`
+  still succeeds.
+- **Alignment is checked after the export.** A continuous stream is segmented by
+  matching each trial's absolute Start/End against the stream's own clock, so a
+  recording whose `.ns2` clock disagrees with the comment clock still exports —
+  just with **zero samples**. `processFolder` therefore prints an *Export
+  alignment check* block naming, per product, how many trials were actually
+  segmented, and warns
+  (`BlackrockLoader:export:StreamMisaligned` / `:StreamPartial`) when any were
+  not. It does not abort: the trials table and the spikes come from a different
+  file and are still good. Watch for it — an unsynced PTP clock otherwise shows
+  up much later as an out-of-bounds index inside `AlignContinuous`. The prefixes (`NSP`/`HUB`/`Hub`), the `.ns2`/`.ns4`
   identifiers, and the `LoadEyeData` / `LoadLFPData` / `LoadPhotodiodeData` /
   `LoadOnlineSpikeData` / `LoadOnlineSpikeWaveform` / `IncludeUnsorted` flags
   are all constructor-overridable properties. `loadContinuous` additionally takes

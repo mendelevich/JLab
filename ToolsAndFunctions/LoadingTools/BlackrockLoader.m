@@ -186,6 +186,23 @@ classdef BlackrockLoader < handle
             fprintf('  %-16s %8.2f\n', stage_report{:});
             fprintf('  %-16s %8.2f\n', 'TOTAL', sum(stage_times));
             fprintf('------------------------\n');
+
+            % Reported AFTER the export, against the products that were actually
+            % written: a stream whose clock does not overlap the comment clock
+            % still exports, just with zero samples, and used to surface only
+            % much later as an out-of-bounds index deep inside the analyzer.
+            obj.reportExportAlignment();
+        end
+
+        function rep = reportExportAlignment(obj)
+        % Check the exported continuous products against the trial markers and
+        % print the verdict. Split compute/print so the verdict is testable on
+        % its own: computeAlignmentReport is pure, printAlignmentReport renders.
+            rep = BlackrockLoader.computeAlignmentReport({ ...
+                'Eye',        obj.Eye; ...
+                'Photodiode', obj.Photodiode; ...
+                'LFP',        obj.LFP});
+            BlackrockLoader.printAlignmentReport(rep);
         end
 
         function load(obj, DataFolder)
@@ -1722,6 +1739,93 @@ classdef BlackrockLoader < handle
             end
         end
 
+        function rep = computeAlignmentReport(products)
+        % Pure: turn the coverage evidence segmentContinuous attached to each
+        % continuous product into a per-product verdict. products is an N x 2
+        % cell of {name, product}; returns a struct array with one row per
+        % product that actually carries evidence.
+        %
+        % A product that is [] was never loaded or never requested, and is
+        % skipped -- "absent" must not read as "misaligned". Likewise a product
+        % with no .info.coverage predates this check and is skipped rather than
+        % reported as broken.
+        %
+        % status: 'ok'    every trial segmented
+        %         'short' some trials segmented, some not
+        %         'error' none segmented -- the markers and the stream do not
+        %                 overlap at all, which is what leaves .data with zero
+        %                 samples and every alignedrawtime NaN
+            rep = struct('name', {}, 'status', {}, 'nSegmented', {}, 'nTrials', {}, ...
+                         'streamStart', {}, 'streamEnd', {}, ...
+                         'markerFirst', {}, 'markerLast', {}, 'gap', {});
+            for k = 1:size(products, 1)
+                P = products{k, 2};
+                if isempty(P) || ~isfield(P, 'info') || ~isfield(P.info, 'coverage')
+                    continue
+                end
+                c = P.info.coverage;
+                if c.nSegmented == 0
+                    status = 'error';
+                elseif c.nSegmented < c.nTrials
+                    status = 'short';
+                else
+                    status = 'ok';
+                end
+                % Signed shortfall between the two intervals; 0 when they touch
+                % or overlap. Positive means they are disjoint by that many
+                % seconds, whichever side is late.
+                gap = max([c.streamStart - c.markerLast, c.markerFirst - c.streamEnd, 0]);
+                rep(end+1) = struct('name', products{k, 1}, 'status', status, ...
+                    'nSegmented', c.nSegmented, 'nTrials', c.nTrials, ...
+                    'streamStart', c.streamStart, 'streamEnd', c.streamEnd, ...
+                    'markerFirst', c.markerFirst, 'markerLast', c.markerLast, ...
+                    'gap', gap); %#ok<AGROW>
+            end
+        end
+
+        function printAlignmentReport(rep)
+        % Render only -- takes the already-computed report and prints it. Also
+        % raises one warning per misaligned product so a batch run's log carries
+        % it even when the block above has scrolled past; deliberately NOT an
+        % error, because the trials table and the spikes come from a different
+        % file and are still good when a continuous stream is misaligned.
+            if isempty(rep)
+                return
+            end
+            fprintf('\n--- Export alignment check (trials vs continuous streams) ---\n');
+            for k = 1:numel(rep)
+                r = rep(k);
+                fprintf('  %-12s %-6s %d/%d trials segmented\n', ...
+                    [r.name ':'], upper(r.status), r.nSegmented, r.nTrials);
+                if strcmp(r.status, 'ok')
+                    continue
+                end
+                fprintf('       stream  [%.3f .. %.3f]\n', r.streamStart, r.streamEnd);
+                fprintf('       markers [%.3f .. %.3f]\n', r.markerFirst, r.markerLast);
+                if r.gap > 0
+                    late = 'stream clock is BEHIND the comment clock';
+                    if r.markerFirst > r.streamEnd
+                        late = 'comment clock is AHEAD of the stream clock';
+                    end
+                    fprintf('       the two do not overlap: gap %.3f s (%.2f days) -- %s\n', ...
+                        r.gap, r.gap / 86400, late);
+                end
+                if strcmp(r.status, 'error')
+                    fprintf(['       NOTHING was segmented: this product exports with zero samples,\n' ...
+                             '       and any analysis that aligns to it will fail on an empty time base.\n']);
+                    warning('BlackrockLoader:export:StreamMisaligned', ...
+                        ['%s: no trial overlaps the continuous stream (0/%d segmented, gap %.1f s). ' ...
+                         'The exported %s product has zero samples.'], ...
+                        r.name, r.nTrials, r.gap, r.name);
+                else
+                    warning('BlackrockLoader:export:StreamPartial', ...
+                        '%s: only %d of %d trials overlap the continuous stream.', ...
+                        r.name, r.nSegmented, r.nTrials);
+                end
+            end
+            fprintf('-------------------------------------------------------------\n');
+        end
+
         function B = subsetChannels(A, rows)
         % Take a channel subset of a segmentContinuous product. Only .data is
         % indexed; timeseq/info describe the trials and the clock, which the
@@ -1924,6 +2028,20 @@ classdef BlackrockLoader < handle
             A.info.samplingrate = nsx_samplingrate;
             A.info.Session      = [trials.Session]';        % nTrials x 1
             A.info.Trial_number = [trials.Trial_number]';   % nTrials x 1
+
+            % Alignment evidence, carried WITH the product. Recorded here because
+            % this is the only place that sees both clocks: nsx_abs_time is
+            % released by freeRaw as soon as parseEye returns, so a caller
+            % downstream can no longer tell "no trial overlapped the stream" from
+            % "the stream was never loaded". Pure bookkeeping -- nothing here
+            % changes what is segmented.
+            A.info.coverage = struct( ...
+                'nTrials',     nTrials, ...
+                'nSegmented',  sum(n > 0), ...
+                'streamStart', tRef, ...
+                'streamEnd',   tRef + (nSample - 1) / nsx_samplingrate, ...
+                'markerFirst', min([starts(ok); NaN]), ...   % min/max skip the NaN,
+                'markerLast',  max([starts(ok); NaN]));      % so no marker -> NaN
         end
 
         function R = segmentSpikes(trials, spikeTimes, spikeElectrode, spikeUnit, preMs, postMs, binMs, violMs, spikeWaveform, waveformScale, spikeTicks, startTicks, endTicks, timeRes)
