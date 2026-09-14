@@ -456,17 +456,25 @@ classdef BlackrockLoader < handle
         % Load ONE continuous (.nsx) stream for a date folder -- eye, LFP or
         % photodiode, depending on the prefix/extension asked for. Returns a struct with
         % .nsxdata, .uv_per_digit, .nsx_samplingrate, .nsx_abs_time,
-        % .timeresolution, and .status. Throws if no matching file
+        % .timeresolution, .repair and .status. Throws if no matching file
         % is present or if the user cancels the multi-file selection dialog; the
         % orchestrator (loadSession) turns such throws into a soft status string.
         % Pure: opens only the .nsx it needs, touches no session state.
         %
-        % .nsxdata is RAW int16 as stored on disk, not uV. openNSx's 'uv' option
-        % forces the whole array to double (4x the file size in RAM, and these
+        % .nsxdata is normally RAW int16 as stored on disk, not uV. openNSx's 'uv'
+        % option forces the whole array to double (4x the file size in RAM, and these
         % files run to hundreds of MB), so instead we keep the samples int16 and
         % return .uv_per_digit -- the per-channel scale factor, nChan x 1 --
         % alongside. segmentContinuous applies it per trial slice, converting only
         % the data that is actually kept. uV = double(nsxdata) .* uv_per_digit.
+        %
+        % A PTP stream that needed the timestamp repair (see .repair, and the
+        % 'nosegment' comment below) comes back as SINGLE instead, because the
+        % milliseconds where no sample arrived on time are held as NaN and int16
+        % cannot carry NaN. uv_per_digit still applies unchanged, and
+        % segmentContinuous already casts to single and pads with NaN, so nothing
+        % downstream has to special-case it. Clean files never take that path and
+        % keep the int16 footprint.
         %
         % Both overrides apply to this call only and leave the config properties
         % untouched:
@@ -503,6 +511,7 @@ classdef BlackrockLoader < handle
             A.timeresolution   = [];
             A.nsx_start_tick   = uint64(0);   % raw tick of sample 1, for the
                                               % exact window arithmetic
+            A.repair    = BlackrockLoader.emptyContinuousRepair();
             A.status    = '';
 
             % No prefix -> take every match; filterByPrefix cannot express
@@ -537,7 +546,56 @@ classdef BlackrockLoader < handle
             % NPMK setting restored afterwards.
             restoreWarn = BlackrockLoader.muteNpmkUvPrompt();
             cleanup = onCleanup(restoreWarn);
-            tmp_ana_data = openNSx(fullfile(DataFolder, Filename_ns), 'read', 'report', 'int16');
+
+            % PTP files carry a timestamp on EVERY sample, and openNSx opens a new
+            % data segment wherever the gap between two of them exceeds 2 sample
+            % periods ('max_tick_multiple'). A stream whose timestamps glitch is
+            % therefore chopped into hundreds of spurious segments, and the
+            % clock-drift fix that runs per segment can then build a
+            % negative-width mat2cell chunk and throw outright (NPMK 7.4.6.3,
+            % openNSx ~line 1400: gapIndex*abs(addedSamples) is never checked
+            % against the segment length).
+            %
+            % Both outcomes -- a hard error, or a cell array of segments that the
+            % single-block arithmetic below cannot describe -- have the same
+            % answer: re-read with 'nosegment', which skips pause detection and
+            % the alignment pass entirely and hands back one contiguous block plus
+            % the per-sample timestamps in .Time. Guarding on iscell matters
+            % independently of the crash: without it a segmented file silently
+            % sets N to the SEGMENT COUNT a few lines down and builds a nonsense
+            % time base instead of failing.
+            nsPath      = fullfile(DataFolder, Filename_ns);
+            nSegments   = 0;
+            useNoSegment = false;
+            try
+                tmp_ana_data = openNSx(nsPath, 'read', 'report', 'int16');
+                if iscell(tmp_ana_data.Data)
+                    nSegments    = numel(tmp_ana_data.Data);
+                    useNoSegment = true;
+                    warning(['%s came back as %d data segments; re-reading with ' ...
+                             '''nosegment'' and rebuilding the sample grid.'], ...
+                            Filename_ns, nSegments);
+                end
+            catch ME
+                useNoSegment = true;
+                % The read threw before it could report how badly the file had
+                % been split, and that count is the most diagnostic thing we can
+                % say about it, so pay for one header-only pass to recover it.
+                % 'noread' walks the segment table without touching the alignment
+                % code that just threw, so it is safe here.
+                try
+                    probe     = openNSx(nsPath, 'noread');
+                    nSegments = numel(probe.MetaTags.DataPoints);
+                catch
+                    nSegments = 0;
+                end
+                warning(['Segmented read of %s failed (%s); file holds %d data ' ...
+                         'segments, retrying with ''nosegment''.'], ...
+                        Filename_ns, ME.message, nSegments);
+            end
+            if useNoSegment
+                tmp_ana_data = openNSx(nsPath, 'read', 'report', 'int16', 'nosegment');
+            end
             clear cleanup   % restore now rather than at function exit
             A.nsxdata          = tmp_ana_data.Data;                       % raw int16
             % Same per-channel factor openNSx applies for 'uv' (MaxAnalogValue
@@ -549,12 +607,60 @@ classdef BlackrockLoader < handle
             nsx_timeresolution = tmp_ana_data.MetaTags.TimeRes;
             A.nsx_samplingrate = tmp_ana_data.MetaTags.SamplingFreq;
             nsx_starttimeSec   = nsx_starttime / nsx_timeresolution;
+
+            % --- PTP sample-order repair (only on the 'nosegment' path) ---------
+            % .Time survives only when the alignment pass was skipped, so its
+            % presence IS the signal that we took the fallback above and are
+            % holding samples exactly as the NSP wrote them -- including any that
+            % arrived late and therefore sit out of chronological order. Those are
+            % real, non-duplicate samples carrying values from tens or hundreds of
+            % ms earlier, so leaving them in place would scatter stale eye
+            % positions through the trace at their WRONG time.
+            %
+            % Drop them (keep only forward-progressing timestamps) and scatter the
+            % survivors onto the millisecond slot their own timestamp names,
+            % leaving NaN wherever nothing arrived on time. That restores a
+            % genuinely uniform grid, which is exactly what nsx_abs_time claims
+            % below and what segmentContinuous's closed-form window arithmetic
+            % assumes. A file with real recorded pauses lands here too and gets
+            % its pauses filled with NaN rather than silently closed up.
+            A.repair = BlackrockLoader.emptyContinuousRepair();
+            A.repair.segments = nSegments;
+            if isfield(tmp_ana_data, 'Time') && ~isempty(tmp_ana_data.Time)
+                tick_per_sample = nsx_timeresolution / A.nsx_samplingrate;
+                sample_tick     = double(tmp_ana_data.Time);
+                keep            = sample_tick >= cummax(sample_tick);
+                grid_index      = round((sample_tick(keep) - sample_tick(1)) / tick_per_sample) + 1;
+                nGrid           = grid_index(end);
+                nPlaced         = numel(unique(grid_index));
+
+                if any(~keep) || nGrid ~= numel(grid_index)
+                    % Densifying a genuinely long pause would allocate a grid far
+                    % larger than the data. Fail loudly rather than exhaust memory.
+                    if nGrid > 2 * numel(grid_index)
+                        error(['%s spans %d sample slots for only %d samples; ' ...
+                               'this looks like a real recorded pause, which ' ...
+                               'loadContinuous cannot represent as one block.'], ...
+                              Filename_ns, nGrid, numel(grid_index));
+                    end
+                    raw = tmp_ana_data.Data(:, keep);
+                    A.nsxdata = nan(size(raw, 1), nGrid, 'single');
+                    A.nsxdata(:, grid_index) = single(raw);
+
+                    A.repair.applied    = true;
+                    A.repair.stale      = sum(~keep);
+                    A.repair.gaps       = nGrid - nPlaced;
+                    A.repair.collisions = numel(grid_index) - nPlaced;
+                end
+            end
+            % --------------------------------------------------------------------
+
             N = size(A.nsxdata, 2);
             nsx_rel_time       = (0:N-1) / A.nsx_samplingrate;            % from start time
             A.nsx_abs_time     = nsx_starttimeSec + nsx_rel_time;
             A.timeresolution   = nsx_timeresolution;
             A.nsx_start_tick   = uint64(nsx_starttime);
-            A.status    = sprintf('ok (%s)', Filename_ns);
+            A.status    = BlackrockLoader.continuousStatus(Filename_ns, A.repair);
         end
 
         function R = loadSpikes(obj, DataFolder, nevCache)
@@ -1553,6 +1659,45 @@ classdef BlackrockLoader < handle
             if isempty(d); return; end
             keep = ~cellfun('isempty', regexpi({d.name}, ['^' prefix], 'once'));
             d = d(keep);
+        end
+
+        function R = emptyContinuousRepair()
+        % The "nothing was wrong with this stream" report loadContinuous returns
+        % in A.repair. Kept as one factory so the no-repair and repaired shapes
+        % can never drift apart.
+        %   segments   -- data segments openNSx reported before the 'nosegment'
+        %                 re-read (0 when the normal single-block read worked)
+        %   applied    -- true when the sample grid was actually rebuilt
+        %   stale      -- samples dropped for arriving out of chronological order
+        %   gaps       -- grid slots left NaN because no sample arrived on time
+        %   collisions -- survivors that landed on an already-occupied slot
+        %                 (last one wins); non-zero means the timestamps are
+        %                 finer than the sample period allows for
+            R = struct('segments', 0, 'applied', false, ...
+                       'stale', 0, 'gaps', 0, 'collisions', 0);
+        end
+
+        function s = continuousStatus(fileName, repair)
+        % Status line for one continuous stream. A repaired stream says so in the
+        % load summary -- silently dropping ~1% of an eye trace is exactly the
+        % kind of thing that must not pass unremarked.
+            if ~repair.applied
+                if repair.segments > 0
+                    s = sprintf('ok (%s) [re-read with nosegment: %d segments]', ...
+                                fileName, repair.segments);
+                else
+                    s = sprintf('ok (%s)', fileName);
+                end
+                return
+            end
+            if repair.segments > 0
+                segTxt = sprintf('%d segments, ', repair.segments);
+            else
+                segTxt = '';
+            end
+            s = sprintf(['ok (%s) [PTP repair: %s%d stale samples dropped, ' ...
+                         '%d NaN gaps, %d collisions]'], ...
+                        fileName, segTxt, repair.stale, repair.gaps, repair.collisions);
         end
 
         function tf = hasComments(s)
