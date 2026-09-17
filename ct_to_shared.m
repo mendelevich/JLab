@@ -1,12 +1,15 @@
 function ct_to_shared(inputCsv, task, monkey, outputCsv, mapPath)
 % CT_TO_SHARED  Convert a Cage-Training trial CSV to the shared CT/BR schema.
 %
+%   ct_to_shared(inputCsv, task, monkey)
 %   ct_to_shared(inputCsv, task, monkey, outputCsv)
 %   ct_to_shared(inputCsv, task, monkey, outputCsv, mapPath)
 %
-% Reads the CSV produced by CageTrainingDataLoading.m (all_trials_<date>.csv,
-% one row per trial) and writes a CSV whose columns are the shared variable
-% names, filling each from the cage side of the map.
+% Reads a cage trials CSV (one row per trial) and writes a CSV whose columns are
+% the shared variable names, filling each from the cage side of the map. If
+% outputCsv is omitted it defaults to the SAME FOLDER as inputCsv with the name
+% switched from '..._raw' to '..._converted' (so '<date>_ct_<task>_<monkey>_raw.csv'
+% becomes '<date>_ct_<task>_<monkey>_converted.csv').
 %
 % The MAP is schema_map.json (the single source of truth, shared with the Python
 % converters in JLab_Python). This file interprets each entry's "ct" spec and
@@ -18,11 +21,21 @@ function ct_to_shared(inputCsv, task, monkey, outputCsv, mapPath)
 % (the cage CSV does not carry the task, so it must be passed in).
 %
 % Example:
-%   ct_to_shared('all_trials_2026-08-12.csv', 'timedelay', 'Porthos', 'shared.csv')
+%   ct_to_shared('2026-03-02_ct_timedelay_Betty_raw.csv', 'timedelay', 'Betty')
 %
 % NOTE: not yet validated in MATLAB against real cage data. Transforms with a
 % "CHECK" comment are unverified encodings.
 
+    if nargin < 4 || isempty(outputCsv)
+        % default: same folder as the input, '_raw' -> '_converted'
+        [inDir, inName] = fileparts(inputCsv);
+        if contains(inName, '_raw')
+            outName = strrep(inName, '_raw', '_converted');
+        else
+            outName = [inName '_converted'];
+        end
+        outputCsv = fullfile(inDir, [outName '.csv']);
+    end
     if nargin < 5 || isempty(mapPath)
         mapPath = fullfile(fileparts(mfilename('fullpath')), 'schema_map.json');
     end
@@ -66,7 +79,7 @@ function ct_to_shared(inputCsv, task, monkey, outputCsv, mapPath)
         out.(shared) = col;
     end
 
-    writetable(out, outputCsv);
+    writeTableBlanks(out, outputCsv);
     fprintf('Wrote %d rows x %d cols -> %s\n', height(out), width(out), outputCsv);
 end
 
@@ -124,9 +137,9 @@ function col = computeValue(name, T, ctx, nRows, shared)
         case 'row_index'                     % 0-based row counter
             col = (0:nRows-1)';
 
-        case 'session'                       % CHECK: bump when trialnumber resets
+        case 'session'                       % +1 each time trialnumber resets to 0; first = 0
             tn = getNumericCol(T, 'trialnumber', nRows, shared);
-            col = cumsum([false; diff(tn) < 0]) + 1;
+            col = cumsum(tn == 0) - 1;
 
         case 'direction_sign'                % +1 right, -1 left
             col = directionSign(T, nRows, shared);
@@ -145,6 +158,22 @@ function col = computeValue(name, T, ctx, nRows, shared)
 
         case 'is_single_choice'              % only the correct target shown
             col = getCol(T, 'onlyShowCorrect', nRows, shared);
+
+        case 'fixation_size'                 % sizes are screen fractions; touch = 1 (others TBD)
+            if strcmp(ctx.task, 'touch')
+                col = ones(nRows, 1);
+            else
+                warning('ct_to_shared:todo', ...
+                    '[%s] fixation_size for ''%s'' not set yet (needs screen-fraction calibration)', ...
+                    shared, ctx.task);
+                col = nan(nRows, 1);
+            end
+        case 'fixation_acceptance_window'    % matches fixation_size for the touch- tasks
+            if any(strcmp(ctx.task, {'touch', 'touchdot', 'touchdotRL'}))
+                col = computeValue('fixation_size', T, ctx, nRows, shared);
+            else
+                col = nan(nRows, 1);
+            end
 
         case 'fixation_x'
             col = touchOrConst(T, ctx, nRows, shared, 'xposAbs', 0);
@@ -242,4 +271,20 @@ function col = touchOrConst(T, ctx, nRows, shared, absCol, constVal, tasks)
     else
         col = nan(nRows, 1);
     end
+end
+
+function writeTableBlanks(T, file)
+% Write T to CSV with missing values shown as EMPTY fields instead of "NaN".
+% writetable prints numeric NaN as the literal text "NaN"; converting each numeric
+% column to string (MATLAB's shortest round-trip format, so no precision is lost)
+% turns NaN into <missing>, which writetable writes as an empty field. String /
+% categorical / missing columns already write blank for their missing values.
+    vn = T.Properties.VariableNames;
+    for k = 1:numel(vn)
+        col = T.(vn{k});
+        if isnumeric(col)
+            T.(vn{k}) = string(col);
+        end
+    end
+    writetable(T, file);
 end

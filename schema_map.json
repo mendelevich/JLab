@@ -149,8 +149,7 @@
     "shared": "ts_target_2_off",
     "ct": {
       "by_task": {
-        "timedelay": "ts_Stimulus3_HideTargets",
-        "motion": "ts_TargetOnset"
+        "timedelay": "ts_Stimulus3_HideTargets"
       }
     },
     "br": {
@@ -160,7 +159,10 @@
   {
     "shared": "ts_fixation_off",
     "ct": {
-      "na": true
+      "by_task": {
+        "timedelay": "ts_TargetOnset",
+        "motion": "ts_TargetOnset"
+      }
     },
     "br": {
       "direct": "Fixation_point_off"
@@ -265,7 +267,7 @@
   {
     "shared": "fixation_size",
     "ct": {
-      "todo": "cage: per-task fixation size (touch 100%, touchdot shrinks per correct trial, touchdotRL 0.1vh, timedelay/motion 25px)"
+      "compute": "fixation_size"
     },
     "br": {
       "direct": "Fixation_size"
@@ -274,7 +276,7 @@
   {
     "shared": "fixation_acceptance_window",
     "ct": {
-      "todo": "cage: touch/dot/RL = fixation_size; timedelay/motion = 100px"
+      "compute": "fixation_acceptance_window"
     },
     "br": {
       "direct": "Fixation_acceptance_window"
@@ -749,7 +751,6 @@
     "shared": "dr_target_1",
     "ct": {
       "by_task": {
-        "timedelay": "dr_InitialTargetDuration",
         "motion": "dr_DotDuration"
       }
     },
@@ -816,7 +817,7 @@
       "timedelay"
     ],
     "ct": {
-      "todo": "cage: computed sign * dr_InitialTargetDuration (dr_Target1ToTarget2 may not be a raw column)"
+      "direct": "dr_InitialTargetDuration"
     },
     "br": {
       "direct": "Requested_target_2_time_offset"
