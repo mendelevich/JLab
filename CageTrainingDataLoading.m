@@ -33,7 +33,10 @@ if ~exist(output_path, 'dir')
     mkdir(output_path);
 end
 
-output_csv = sprintf('all_trials_%s.csv', data_date);
+% Output name: <date>_ct_<task>_<monkey>_raw.csv
+[~, task_name] = fileparts(task_type);      % bare task, e.g. 'timedelay' from 'cage_training/timedelay'
+monkey_name = erase(monkey, 'Monkey ');     % clean token, e.g. 'Betty' from 'Monkey Betty'
+output_csv = sprintf('%s_ct_%s_%s_raw.csv', data_date, task_name, monkey_name);
 output_file = fullfile(output_path,output_csv);
 
 
@@ -105,7 +108,7 @@ end
 if isempty(allData)
     error('No data found, check whether the data folder exist!')
 else
-    writetable(allData, output_file);
+    writeTableBlanks(allData, output_file);
     disp(['All trials has been combined into ', output_file]);
     disp(head(allData));
 end
@@ -149,4 +152,20 @@ end
 % put T's columns in the same order as existing, then stack
 T = T(:, existing.Properties.VariableNames);
 combined = [existing; T];
+end
+
+function writeTableBlanks(T, file)
+% Write T to CSV with missing values shown as EMPTY fields instead of "NaN".
+% writetable prints numeric NaN as the literal text "NaN"; converting each numeric
+% column to string (MATLAB's shortest round-trip format, so no precision is lost)
+% turns NaN into <missing>, which writetable writes as an empty field. String /
+% categorical / missing columns already write blank for their missing values.
+vn = T.Properties.VariableNames;
+for k = 1:numel(vn)
+    col = T.(vn{k});
+    if isnumeric(col)
+        T.(vn{k}) = string(col);
+    end
+end
+writetable(T, file);
 end

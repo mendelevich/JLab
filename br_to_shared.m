@@ -53,7 +53,7 @@ function br_to_shared(inputCsv, monkey, outputCsv, mapPath)
         out.(shared) = col;
     end
 
-    writetable(out, outputCsv);
+    writeTableBlanks(out, outputCsv);
     fprintf('Wrote %d rows x %d cols -> %s\n', height(out), width(out), outputCsv);
 end
 
@@ -119,4 +119,20 @@ function col = getCol(T, name, nRows, shared)
         warning('br_to_shared:missing', '[%s] source column ''%s'' not found; filling NaN', shared, name);
         col = nan(nRows, 1);
     end
+end
+
+function writeTableBlanks(T, file)
+% Write T to CSV with missing values shown as EMPTY fields instead of "NaN".
+% writetable prints numeric NaN as the literal text "NaN"; converting each numeric
+% column to string (MATLAB's shortest round-trip format, so no precision is lost)
+% turns NaN into <missing>, which writetable writes as an empty field. String /
+% categorical / missing columns already write blank for their missing values.
+    vn = T.Properties.VariableNames;
+    for k = 1:numel(vn)
+        col = T.(vn{k});
+        if isnumeric(col)
+            T.(vn{k}) = string(col);
+        end
+    end
+    writetable(T, file);
 end
